@@ -158,9 +158,6 @@ package-dir:
 	mkdir -p "$(PACKAGE_DIR)"; \
 	cp -R sqlite "$(PACKAGE_DIR)/sqlite"; \
 	if [ -f LICENSE ]; then cp LICENSE "$(PACKAGE_DIR)/"; fi; \
-	if [ -f README.md ]; then cp README.md "$(PACKAGE_DIR)/"; fi; \
-	if [ -f packaging/README.package.md ]; then cp packaging/README.package.md "$(PACKAGE_DIR)/README.package.md"; fi; \
-	if [ -d packaging/examples ]; then mkdir -p "$(PACKAGE_DIR)/examples"; cp -R packaging/examples/. "$(PACKAGE_DIR)/examples/"; fi; \
 	echo "Wrote $(PACKAGE_DIR)"
 
 .PHONY: package-zip
