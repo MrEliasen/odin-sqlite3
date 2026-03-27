@@ -1,0 +1,44 @@
+inputs = [
+    "input/sqlite3.h"
+]
+
+output_folder = "sqlite/raw/generated"
+package_name = "raw"
+
+remove_function_prefix = "sqlite3_"
+remove_type_prefix = "sqlite3_"
+remove_macro_prefix = "SQLITE_"
+
+force_ada_case_types = true
+
+imports_file = "sqlite/raw/imports.odin"
+
+rename = {
+    "int64" = "Int64"
+    "uint64" = "UInt64"
+}
+
+// SQLite's headers use a few ownership/lifetime-sensitive APIs and sentinel-style
+// C macros that do not translate cleanly by default. Keep generation broad, but
+// explicitly override the handful of problematic raw signatures.
+//
+// Notes:
+// - `expanded_sql` returns heap-allocated memory from SQLite that must be passed
+//   to `sqlite3_free()`. Treating it as plain `cstring` obscures ownership;
+//   `rawptr` keeps the wrapper honest about conversion/freeing.
+// - `column_blob` is explicitly `const void *` in C, so keep it as `rawptr`.
+// - `column_text` is `const unsigned char *` in C. Using `cstring` gives the
+//   wrapper a stable and intention-revealing surface for UTF-8 text extraction.
+// - `bind_*` destructor sentinels (`SQLITE_STATIC` / `SQLITE_TRANSIENT`) are
+//   still expected to be patched/handled in raw output if bindgen cannot emit
+//   them correctly from SQLite's macro style.
+procedure_type_overrides = {
+    "expanded_sql" = "rawptr"
+    "column_blob"  = "rawptr"
+    "column_text"  = "cstring"
+}
+
+// Keep clang's header resolution explicit and reproducible.
+clang_include_paths = [
+    "input"
+]

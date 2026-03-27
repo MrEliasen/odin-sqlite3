@@ -1,0 +1,29 @@
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Odin / build outputs
+*.bin
+*.exe
+*.dll
+*.so
+*.dylib
+*.o
+*.obj
+*.a
+*.lib
+
+# Downloaded tools and archives
+deps/*
+!deps/.gitkeep
+
+# Downloaded SQLite header used only for regeneration
+input/sqlite3.h
+
+# Generated raw bindings
+sqlite/raw/generated/
+
+# Release/package output
+out/
