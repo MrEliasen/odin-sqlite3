@@ -334,15 +334,6 @@ If you want a focused usage example for this, read:
 
 - `packaging/examples/common_patterns/ownership_and_cleanup/main.odin`
 
-## Import path
-
-Inside this repository, examples use relative imports.
-
-In a packaged consumer project, you will usually import the package from wherever you vendor/install it, for example:
-
-```text
-import sqlite "vendor:sqlite"
-```
 
 ## More information
 
@@ -350,9 +341,3 @@ For user-facing examples and packaging notes, see:
 
 - `packaging/examples/README.md`
 - `packaging/README.package.md`
-
-For project-internal implementation notes, development workflow notes, and status tracking, see:
-
-- `PROJECT.md`
-- `IMPLEMENTATION_SPEC.md`
-- `PRIORITIES.md`
