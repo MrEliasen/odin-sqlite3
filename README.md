@@ -5,7 +5,7 @@ Thin SQLite bindings for Odin.
 `odin-sqlite` is designed as:
 
 1. a generated raw binding layer from `sqlite3.h`
-2. a small handwritten wrapper layer on top
+2. a small "handwritten" wrapper layer on top
 3. a practical, explicit API for normal SQLite usage in Odin
 
 The design goal is not to build an ORM. The wrapper stays close to SQLite’s actual execution model and is optimized first for predictable server-side usage.
