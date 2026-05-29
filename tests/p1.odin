@@ -18,21 +18,24 @@ test_structured_error_model :: proc() {
 	defer test_db_close(&test_db)
 
 	err, ok := sqlite.db_exec(test_db.db, "SELECT * FROM p1_missing_table")
+	defer sqlite.error_destroy(&err)
 	expect_false(ok, "exec against missing table should fail")
 	expect_eq(err.code, int(raw.ERROR), "structured error should preserve primary sqlite result code")
 	expect_true(err.extended_code != 0, "structured error should preserve extended sqlite result code")
 	expect_string_contains(err.message, "no such table", "structured error should preserve sqlite message")
 	expect_eq(err.sql, "SELECT * FROM p1_missing_table", "structured error should preserve SQL context")
 
-	err_with_ctx := sqlite.error_with_context(err, "during p1 structured error test")
-	expect_true(sqlite.error_has_context(err_with_ctx), "error_with_context should attach context")
-	expect_string_contains(sqlite.error_string(err_with_ctx), "context=", "formatted error should include context when present")
+	sqlite.error_with_context(&err, "during p1 structured error test")
+	expect_true(sqlite.error_has_context(err), "error_with_context should attach context")
+	expect_string_contains(sqlite.error_string(err), "context=", "formatted error should include context when present")
 
-	err_with_op := sqlite.error_with_op(err_with_ctx, "exec")
-	expect_true(sqlite.error_has_op(err_with_op), "error_with_op should attach operation name")
-	expect_string_contains(sqlite.error_string(err_with_op), "op=", "formatted error should include operation when present")
+	sqlite.error_with_op(&err, "exec")
+	expect_true(sqlite.error_has_op(err), "error_with_op should attach operation name")
+	expect_string_contains(sqlite.error_string(err), "op=", "formatted error should include operation when present")
 
-	err_with_sql := sqlite.error_with_sql(sqlite.error_none(), "SELECT 1")
+	err_with_sql := sqlite.error_none()
+	defer sqlite.error_destroy(&err_with_sql)
+	sqlite.error_with_sql(&err_with_sql, "SELECT 1")
 	expect_true(sqlite.error_has_sql(err_with_sql), "error_with_sql should attach sql to an error value")
 
 	expect_eq(sqlite.error_code_name(int(raw.ERROR)), "SQLITE_ERROR", "error_code_name should format known sqlite result names")
@@ -158,6 +161,7 @@ test_blob_api :: proc() {
 	}
 
 	write_err, write_ok = sqlite.blob_write(read_only_blob, []u8{1}, 0)
+	defer sqlite.error_destroy(&write_err)
 	expect_false(write_ok, "blob_write should fail for read-only handle")
 	expect_eq(write_err.code, int(raw.READONLY), "blob_write should report SQLITE_READONLY for read-only handle")
 	expect_string_contains(sqlite.error_string(write_err), "blob_write", "blob_write error should include operation context")

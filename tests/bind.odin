@@ -90,6 +90,7 @@ test_bind_batch_positional_args_errors_on_too_many_parameters :: proc() {
 		sqlite.bind_arg_i64(2),
 		sqlite.bind_arg_i64(3),
 	)
+	defer sqlite.error_destroy(&err)
 	expect_false(ok, "stmt_bind_args should fail when more args than parameters are supplied")
 	expect_eq(err.code, int(raw.RANGE), "too many positional args should report SQLITE_RANGE")
 	expect_string_contains(sqlite.error_string(err), "stmt_bind_args", "too many positional args error should include operation context")
@@ -431,10 +432,10 @@ test_bind_invalid_index_returns_range_error :: proc() {
 	defer finalize_ok(&stmt, sql)
 
 	err, ok := sqlite.stmt_bind_i64(&stmt, 0, 1)
-	expect_error(err, ok, int(raw.MISUSE), "binding at index 0 should fail with misuse in wrapper")
+	expect_error(&err, ok, int(raw.MISUSE), "binding at index 0 should fail with misuse in wrapper")
 
 	err, ok = sqlite.stmt_bind_i64(&stmt, 2, 1)
-	expect_error(err, ok, int(raw.RANGE), "binding past parameter count should fail with SQLITE_RANGE")
+	expect_error(&err, ok, int(raw.RANGE), "binding past parameter count should fail with SQLITE_RANGE")
 }
 
 test_bind_missing_named_parameter_returns_range_error :: proc() {
@@ -446,5 +447,5 @@ test_bind_missing_named_parameter_returns_range_error :: proc() {
 	defer finalize_ok(&stmt, sql)
 
 	err, ok := sqlite.stmt_bind_named_i64(&stmt, ":missing", 10)
-	expect_error(err, ok, int(raw.RANGE), "binding missing named parameter should fail with SQLITE_RANGE")
+	expect_error(&err, ok, int(raw.RANGE), "binding missing named parameter should fail with SQLITE_RANGE")
 }

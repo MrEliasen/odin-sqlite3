@@ -10,9 +10,9 @@ blob_result_from_blob :: proc(blob: Blob, code: int) -> (Error, bool) {
 	}
 
 	err := error_from_db(DB{handle = blob.db}, code)
-	err = error_with_op(err, "blob")
-	err = error_with_context(
-		err,
+	error_with_op(&err, "blob")
+	error_with_context(
+		&err,
 		fmt.tprintf("schema=%s table=%s column=%s", blob.schema_name, blob.table_name, blob.column_name),
 	)
 	return err, false
@@ -27,11 +27,14 @@ blob_open :: proc(
 	flags: Blob_Open_Flags = .ReadOnly,
 ) -> (Blob, Error, bool) {
 	if db.handle == nil {
-		return Blob{}, error_with_op(error_from_db(db, int(raw.MISUSE)), "blob_open"), false
+		err := error_from_db(db, int(raw.MISUSE))
+		error_with_op(&err, "blob_open")
+		return Blob{}, err, false
 	}
 	if schema == "" || table == "" || column == "" {
-		err := error_with_op(error_from_db(db, int(raw.MISUSE)), "blob_open")
-		err = error_with_context(err, "schema, table, and column must be non-empty")
+		err := error_from_db(db, int(raw.MISUSE))
+		error_with_op(&err, "blob_open")
+		error_with_context(&err, "schema, table, and column must be non-empty")
 		return Blob{}, err, false
 	}
 
@@ -67,9 +70,10 @@ blob_open :: proc(
 		delete(blob.table_name)
 		delete(blob.column_name)
 
-		err := error_with_op(error_from_db(db, int(rc)), "blob_open")
-		err = error_with_context(
-			err,
+		err := error_from_db(db, int(rc))
+		error_with_op(&err, "blob_open")
+		error_with_context(
+			&err,
 			fmt.tprintf("schema=%s table=%s column=%s", schema, table, column),
 		)
 		return Blob{}, err, false
@@ -80,9 +84,10 @@ blob_open :: proc(
 		delete(blob.table_name)
 		delete(blob.column_name)
 
-		err := error_with_op(error_from_db(db, int(raw.ERROR)), "blob_open")
-		err = error_with_context(
-			err,
+		err := error_from_db(db, int(raw.ERROR))
+		error_with_op(&err, "blob_open")
+		error_with_context(
+			&err,
 			fmt.tprintf("schema=%s table=%s column=%s", schema, table, column),
 		)
 		return Blob{}, err, false
@@ -111,7 +116,8 @@ blob_close :: proc(blob: ^Blob) -> (Error, bool) {
 	blob.writeable = false
 
 	if rc != raw.OK {
-		err := error_with_op(error_from_db(DB{}, int(rc)), "blob_close")
+		err := error_from_db(DB{}, int(rc))
+		error_with_op(&err, "blob_close")
 		return err, false
 	}
 
@@ -128,7 +134,9 @@ blob_bytes :: proc(blob: Blob) -> int {
 
 blob_reopen :: proc(blob: ^Blob, rowid: i64) -> (Error, bool) {
 	if blob == nil || blob.handle == nil {
-		return error_with_op(error_from_db(DB{}, int(raw.MISUSE)), "blob_reopen"), false
+		err := error_from_db(DB{}, int(raw.MISUSE))
+		error_with_op(&err, "blob_reopen")
+		return err, false
 	}
 
 	rc := raw.blob_reopen(blob.handle, raw.Int64(rowid))
@@ -142,11 +150,20 @@ blob_reopen :: proc(blob: ^Blob, rowid: i64) -> (Error, bool) {
 
 blob_read_into :: proc(blob: Blob, out: []u8, offset: int = 0) -> (int, Error, bool) {
 	if blob.handle == nil {
-		return 0, error_with_op(error_from_db(DB{}, int(raw.MISUSE)), "blob_read_into"), false
+		err := error_from_db(DB{}, int(raw.MISUSE))
+		error_with_op(&err, "blob_read_into")
+		return 0, err, false
 	}
 	if offset < 0 {
-		err := error_with_op(error_from_db(DB{handle = blob.db}, int(raw.ERROR)), "blob_read_into")
-		err = error_with_context(err, "offset must be >= 0")
+		err := error_from_db(DB{handle = blob.db}, int(raw.ERROR))
+		error_with_op(&err, "blob_read_into")
+		error_with_context(&err, "offset must be >= 0")
+		return 0, err, false
+	}
+	if len(out) > int(max(i32)) || offset > int(max(i32)) {
+		err := error_from_db(DB{handle = blob.db}, int(raw.TOOBIG))
+		error_with_op(&err, "blob_read_into")
+		error_with_context(&err, "len or offset exceeds 2 GiB; sqlite3_blob_read uses i32")
 		return 0, err, false
 	}
 	if len(out) == 0 {
@@ -172,7 +189,9 @@ blob_read_into :: proc(blob: Blob, out: []u8, offset: int = 0) -> (int, Error, b
 // - the returned slice is a copy and remains valid independently of later blob handle operations
 blob_read_all :: proc(blob: Blob, allocator := context.allocator) -> ([]u8, Error, bool) {
 	if blob.handle == nil {
-		return nil, error_with_op(error_from_db(DB{}, int(raw.MISUSE)), "blob_read_all"), false
+		err := error_from_db(DB{}, int(raw.MISUSE))
+		error_with_op(&err, "blob_read_all")
+		return nil, err, false
 	}
 
 	size := blob_bytes(blob)
@@ -189,8 +208,9 @@ blob_read_all :: proc(blob: Blob, allocator := context.allocator) -> ([]u8, Erro
 	if read_n != size {
 		delete(out, allocator)
 
-		short_err := error_with_op(error_from_db(DB{handle = blob.db}, int(raw.ERROR)), "blob_read_all")
-		short_err = error_with_context(short_err, "blob read returned fewer bytes than expected")
+		short_err := error_from_db(DB{handle = blob.db}, int(raw.ERROR))
+		error_with_op(&short_err, "blob_read_all")
+		error_with_context(&short_err, "blob read returned fewer bytes than expected")
 		return nil, short_err, false
 	}
 
@@ -199,16 +219,26 @@ blob_read_all :: proc(blob: Blob, allocator := context.allocator) -> ([]u8, Erro
 
 blob_write :: proc(blob: Blob, data: []u8, offset: int = 0) -> (Error, bool) {
 	if blob.handle == nil {
-		return error_with_op(error_from_db(DB{}, int(raw.MISUSE)), "blob_write"), false
+		err := error_from_db(DB{}, int(raw.MISUSE))
+		error_with_op(&err, "blob_write")
+		return err, false
 	}
 	if !blob.writeable {
-		err := error_with_op(error_from_db(DB{handle = blob.db}, int(raw.READONLY)), "blob_write")
-		err = error_with_context(err, "blob handle was opened read-only")
+		err := error_from_db(DB{handle = blob.db}, int(raw.READONLY))
+		error_with_op(&err, "blob_write")
+		error_with_context(&err, "blob handle was opened read-only")
 		return err, false
 	}
 	if offset < 0 {
-		err := error_with_op(error_from_db(DB{handle = blob.db}, int(raw.ERROR)), "blob_write")
-		err = error_with_context(err, "offset must be >= 0")
+		err := error_from_db(DB{handle = blob.db}, int(raw.ERROR))
+		error_with_op(&err, "blob_write")
+		error_with_context(&err, "offset must be >= 0")
+		return err, false
+	}
+	if len(data) > int(max(i32)) || offset > int(max(i32)) {
+		err := error_from_db(DB{handle = blob.db}, int(raw.TOOBIG))
+		error_with_op(&err, "blob_write")
+		error_with_context(&err, "len or offset exceeds 2 GiB; sqlite3_blob_write uses i32")
 		return err, false
 	}
 	if len(data) == 0 {

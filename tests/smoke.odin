@@ -90,7 +90,9 @@ run_error_and_extra_api_tests :: proc() {
 	run_test("struct_query_one_wrapper", test_struct_query_one_wrapper)
 	run_test("struct_query_optional_wrapper_found_and_missing", test_struct_query_optional_wrapper_found_and_missing)
 	run_test("struct_query_all_wrapper", test_struct_query_all_wrapper)
-	run_test("p3_deferral_contract", test_p3_deferral_contract)
+	run_test("row_mapping_using_inner_struct", test_row_mapping_using_inner_struct)
+	run_test("row_mapping_integer_range_error", test_row_mapping_integer_range_error)
+	run_test("row_mapping_db_query_all_struct_leaves_no_leaks_on_error", test_row_mapping_db_query_all_struct_leaves_no_leaks_on_error)
 }
 
 main :: proc() {
@@ -105,24 +107,30 @@ main :: proc() {
 	run_bind_tests()
 	run_transaction_tests()
 	run_error_and_extra_api_tests()
+	run_sql_behavior_tests()
 
 	fmt.println("== all smoke tests passed ==")
 
-    if len(tracking_allocator.allocation_map) > 0 {
-        fmt.eprintf("=== %v allocations not freed: ===\n", len(tracking_allocator.allocation_map))
+    leak_count := len(tracking_allocator.allocation_map)
+    bad_free_count := len(tracking_allocator.bad_free_array)
+
+    if leak_count > 0 {
+        fmt.eprintf("=== %v allocations not freed: ===\n", leak_count)
         for _, entry in tracking_allocator.allocation_map {
             fmt.eprintf("- %v bytes @ %v\n", entry.size, entry.location)
         }
     }
 
-    // Check for bad frees (optional, often checked per-frame in games)
-    if len(tracking_allocator.bad_free_array) > 0 {
-        fmt.eprintf("=== %v incorrect frees: ===\n", len(tracking_allocator.bad_free_array))
+    if bad_free_count > 0 {
+        fmt.eprintf("=== %v incorrect frees: ===\n", bad_free_count)
         for entry in tracking_allocator.bad_free_array {
             fmt.eprintf("- %p @ %v\n", entry.memory, entry.location)
         }
     }
     mem.tracking_allocator_destroy(&tracking_allocator)
 
+	if leak_count > 0 || bad_free_count > 0 {
+		os.exit(1)
+	}
 	os.exit(0)
 }

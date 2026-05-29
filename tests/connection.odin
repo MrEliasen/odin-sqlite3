@@ -89,6 +89,7 @@ test_connection_errmsg_and_errcode_after_sql_error :: proc() {
 	defer test_db_close(&test_db)
 
 	err, ok := sqlite.db_exec(test_db.db, "SELECT * FROM table_that_does_not_exist")
+	defer sqlite.error_destroy(&err)
 	expect_false(ok, "invalid SQL should fail")
 	expect_false(sqlite.error_ok(err), "invalid SQL should return a wrapper error")
 

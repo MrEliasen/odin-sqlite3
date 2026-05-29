@@ -41,6 +41,8 @@ expect_ne :: proc(actual, expected: $T, message: string, args: ..any) {
 	}
 }
 
+// expect_no_error fails the test if ok is false. On success, the err is
+// expected to be empty (no owned strings) so no destroy is performed.
 expect_no_error :: proc(err: sqlite.Error, ok: bool, message: string, args: ..any) {
 	if !ok {
 		prefix := fmt.tprintf(message, ..args)
@@ -48,14 +50,17 @@ expect_no_error :: proc(err: sqlite.Error, ok: bool, message: string, args: ..an
 	}
 }
 
-expect_error :: proc(err: sqlite.Error, ok: bool, expected_code: int, message: string, args: ..any) {
+// expect_error asserts the err has the expected code and then destroys it.
+// Pass err by pointer (a literal `&err` at the call site is fine).
+expect_error :: proc(err: ^sqlite.Error, ok: bool, expected_code: int, message: string, args: ..any) {
+	defer sqlite.error_destroy(err)
 	if ok {
 		prefix := fmt.tprintf(message, ..args)
 		test_fail("%s | expected error code=%v but call succeeded", prefix, expected_code)
 	}
 	if err.code != expected_code {
 		prefix := fmt.tprintf(message, ..args)
-		test_fail("%s | actual error=%s expected_code=%v", prefix, sqlite.error_string(err), expected_code)
+		test_fail("%s | actual error=%s expected_code=%v", prefix, sqlite.error_string(err^), expected_code)
 	}
 }
 

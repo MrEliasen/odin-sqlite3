@@ -22,6 +22,9 @@ deps/*
 # Downloaded SQLite header used only for regeneration
 input/sqlite3.h
 
+# sqlite3 source for verification
+sqlite-src-*
+
 # Generated raw bindings
 sqlite/raw/generated/
 

@@ -62,6 +62,7 @@ main :: proc() {
 		db,
 		"SELECT definitely_missing_column FROM products",
 	)
+	defer sqlite.error_destroy(&bad_err)
 	if bad_ok {
 		fmt.println("unexpected success for invalid SQL")
 		return
@@ -83,29 +84,22 @@ main :: proc() {
 	fmt.println("")
 	fmt.println("== add context and operation information ==")
 
-	annotated_err := sqlite.error_with_op(
-		sqlite.error_with_context(bad_err, "loading product report"),
-		"query_one",
-	)
+	sqlite.error_with_context(&bad_err, "loading product report")
+	sqlite.error_with_op(&bad_err, "query_one")
 
 	fmt.println("annotated detailed string:")
-	fmt.println(" ", sqlite.error_string(annotated_err))
-	fmt.printf("has context after annotation? %v\n", sqlite.error_has_context(annotated_err))
-	fmt.printf("has op after annotation? %v\n", sqlite.error_has_op(annotated_err))
+	fmt.println(" ", sqlite.error_string(bad_err))
+	fmt.printf("has context after annotation? %v\n", sqlite.error_has_context(bad_err))
+	fmt.printf("has op after annotation? %v\n", sqlite.error_has_op(bad_err))
 
 	fmt.println("")
 	fmt.println("== add SQL to an existing error value ==")
 
-	synthetic_err := sqlite.error_with_sql(
-		sqlite.error_with_op(
-			sqlite.error_with_context(
-				sqlite.error_none(),
-				"building SQL for diagnostics",
-			),
-			"prepare",
-		),
-		"SELECT id, name FROM products WHERE in_stock = 1",
-	)
+	synthetic_err := sqlite.error_none()
+	defer sqlite.error_destroy(&synthetic_err)
+	sqlite.error_with_context(&synthetic_err, "building SQL for diagnostics")
+	sqlite.error_with_op(&synthetic_err, "prepare")
+	sqlite.error_with_sql(&synthetic_err, "SELECT id, name FROM products WHERE in_stock = 1")
 
 	fmt.println("synthetic error value with SQL attached:")
 	fmt.println(" ", sqlite.error_string(synthetic_err))

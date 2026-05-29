@@ -1,5 +1,6 @@
 package tests
 
+import "core:mem"
 import sqlite "../sqlite"
 
 Row_User_Basic :: struct {
@@ -43,6 +44,29 @@ Row_User_Unsupported :: struct {
 	meta: struct {
 		value: i64,
 	},
+}
+
+Row_Inner_Sub :: struct {
+	first: string,
+	last:  string,
+}
+
+Row_User_With_Using :: struct {
+	id:           i64,
+	using person: Row_Inner_Sub,
+	active:       bool,
+}
+
+Row_Small_Int :: struct {
+	id:    i64,
+	tiny:  i8,
+	value: i64,
+}
+
+Row_With_String_And_Small_Int :: struct {
+	id:    i64,
+	name:  string,
+	tiny:  i8,
 }
 
 test_row_mapping_by_field_name :: proc() {
@@ -180,6 +204,7 @@ test_row_mapping_unsupported_field_type_returns_error :: proc() {
 
 	row := Row_User_Unsupported{}
 	err, ok := sqlite.stmt_scan_struct(stmt, &row, context.temp_allocator)
+	defer sqlite.error_destroy(&err)
 	expect_false(ok, "stmt_scan_struct should fail for unsupported destination field types")
 	expect_false(sqlite.error_ok(err), "unsupported field type should return a wrapper error")
 	expect_string_contains(sqlite.error_string(err), "stmt_scan_struct", "unsupported mapping error should include operation context")
@@ -284,4 +309,82 @@ test_struct_query_all_wrapper :: proc() {
 	expect_eq(rows[1].name, "beta", "db_query_all_struct should populate second row name")
 	expect_eq(rows[2].id, i64(3), "db_query_all_struct should populate third row id")
 	expect_eq(rows[2].name, "gamma", "db_query_all_struct should populate third row name")
+}
+
+test_row_mapping_using_inner_struct :: proc() {
+	test_db := test_db_open("row_mapping_using_inner_struct")
+	defer test_db_close(&test_db)
+
+	sql := "SELECT 91 AS id, 'ada' AS first, 'lovelace' AS last, 1 AS active"
+	stmt := prepare_ok(test_db.db, sql)
+	defer finalize_ok(&stmt, sql)
+
+	step_expect_row(stmt, sql)
+
+	row := Row_User_With_Using{}
+	err, ok := sqlite.stmt_scan_struct(stmt, &row, context.temp_allocator)
+	expect_no_error(err, ok, "stmt_scan_struct should descend into `using` embedded struct fields")
+
+	expect_eq(row.id, i64(91), "outer field should map")
+	expect_eq(row.first, "ada", "inner `using` field `first` should map by name")
+	expect_eq(row.last, "lovelace", "inner `using` field `last` should map by name")
+	expect_true(row.active, "outer field after `using` should still map")
+}
+
+test_row_mapping_integer_range_error :: proc() {
+	test_db := test_db_open("row_mapping_integer_range_error")
+	defer test_db_close(&test_db)
+
+	// 1000 is well outside the [-128, 127] range of i8.
+	sql := "SELECT 1 AS id, 1000 AS tiny, 5 AS value"
+	stmt := prepare_ok(test_db.db, sql)
+	defer finalize_ok(&stmt, sql)
+
+	step_expect_row(stmt, sql)
+
+	row := Row_Small_Int{}
+	err, ok := sqlite.stmt_scan_struct(stmt, &row, context.temp_allocator)
+	defer sqlite.error_destroy(&err)
+
+	expect_false(ok, "stmt_scan_struct should fail when i64 value does not fit i8")
+	expect_eq(err.code, 20, "out-of-range integer should report SQLITE_MISMATCH (code 20)")
+	expect_string_contains(sqlite.error_string(err), "does not fit i8", "range error should name the destination type")
+	expect_string_contains(sqlite.error_string(err), "stmt_scan_struct", "range error should carry op context")
+}
+
+test_row_mapping_db_query_all_struct_leaves_no_leaks_on_error :: proc() {
+	// Use a private tracking allocator so we can assert the post-error state ourselves.
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	defer mem.tracking_allocator_destroy(&tracker)
+
+	tracked := mem.tracking_allocator(&tracker)
+
+	test_db := test_db_open("row_mapping_db_query_all_struct_leaves_no_leaks_on_error")
+	defer test_db_close(&test_db)
+
+	// First two rows scan fine and copy strings into the tracking allocator. The third row
+	// has tiny=999 which overflows i8 and triggers an error mid-iteration. The wrapper must
+	// release every previously-appended row's string memory before returning.
+	sql := "SELECT 1 AS id, 'aaa' AS name, 1 AS tiny UNION ALL " +
+		"SELECT 2 AS id, 'bbb' AS name, 2 AS tiny UNION ALL " +
+		"SELECT 3 AS id, 'ccc' AS name, 999 AS tiny"
+
+	rows, err, ok := sqlite.db_query_all_struct(
+		test_db.db,
+		sql,
+		Row_With_String_And_Small_Int,
+		sqlite.DEFAULT_PREPARE_FLAGS,
+		tracked,
+	)
+	defer sqlite.error_destroy(&err)
+
+	expect_false(ok, "db_query_all_struct should fail when a row scan overflows")
+	expect_true(rows == nil, "db_query_all_struct should not return rows on error")
+	expect_eq(err.code, 20, "range error mid-iteration should report SQLITE_MISMATCH (code 20)")
+
+	leak_count := len(tracker.allocation_map)
+	bad_free_count := len(tracker.bad_free_array)
+	expect_eq(leak_count, 0, "db_query_all_struct error path must free all per-row owned data")
+	expect_eq(bad_free_count, 0, "db_query_all_struct error path must not double-free")
 }

@@ -220,12 +220,13 @@ test_transaction_with_transaction_helper :: proc() {
 	expect_no_error(scalar_err, scalar_ok, "count after successful helper transaction should succeed")
 	expect_eq(count, i64(1), "successful helper transaction should persist inserted row")
 
-	err, ok = sqlite.db_with_transaction(test_db.db, proc(db: sqlite.DB) -> (sqlite.Error, bool) {
+	fail_err, fail_ok := sqlite.db_with_transaction(test_db.db, proc(db: sqlite.DB) -> (sqlite.Error, bool) {
 		insert_err, insert_ok := sqlite.db_exec(db, "INSERT INTO helper_tx(name) VALUES ('rolled_back')")
 		expect_no_error(insert_err, insert_ok, "insert inside failing helper transaction should succeed")
-		return sqlite.Error{code = int(raw.ABORT), message = "forced failure"}, false
+		return sqlite.error_make(int(raw.ABORT), "forced failure"), false
 	})
-	expect_false(ok, "db_with_transaction should propagate body failure")
+	defer sqlite.error_destroy(&fail_err)
+	expect_false(fail_ok, "db_with_transaction should propagate body failure")
 
 	count, scalar_err, scalar_ok = sqlite.db_scalar_i64(test_db.db, "SELECT COUNT(*) FROM helper_tx")
 	expect_no_error(scalar_err, scalar_ok, "count after failed helper transaction should succeed")
@@ -249,12 +250,13 @@ test_transaction_with_savepoint_helper :: proc() {
 	})
 	expect_no_error(err, ok, "successful savepoint helper should release changes")
 
-	err, ok = sqlite.db_with_savepoint(test_db.db, "sp_drop", proc(db: sqlite.DB) -> (sqlite.Error, bool) {
+	fail_err, fail_ok := sqlite.db_with_savepoint(test_db.db, "sp_drop", proc(db: sqlite.DB) -> (sqlite.Error, bool) {
 		insert_err, insert_ok := sqlite.db_exec(db, "INSERT INTO helper_sp(name) VALUES ('dropped')")
 		expect_no_error(insert_err, insert_ok, "insert inside failing savepoint helper should succeed")
-		return sqlite.Error{code = int(raw.ABORT), message = "forced savepoint failure"}, false
+		return sqlite.error_make(int(raw.ABORT), "forced savepoint failure"), false
 	})
-	expect_false(ok, "failing savepoint helper should report failure")
+	defer sqlite.error_destroy(&fail_err)
+	expect_false(fail_ok, "failing savepoint helper should report failure")
 
 	err, ok = sqlite.db_commit(test_db.db)
 	expect_no_error(err, ok, "commit after savepoint helper checks should succeed")
@@ -272,17 +274,25 @@ test_transaction_invalid_savepoint_name_is_rejected :: proc() {
 	test_db := test_db_open("transaction_invalid_savepoint_name_is_rejected")
 	defer test_db_close(&test_db)
 
-	err, ok := sqlite.db_savepoint(test_db.db, "")
-	expect_false(ok, "empty savepoint name should fail")
-	expect_true(err.code != 0, "empty savepoint name should produce an error")
+	err1, ok1 := sqlite.db_savepoint(test_db.db, "")
+	defer sqlite.error_destroy(&err1)
+	expect_false(ok1, "empty savepoint name should fail")
+	expect_true(err1.code != 0, "empty savepoint name should produce an error")
 
-	err, ok = sqlite.db_release(test_db.db, "")
-	expect_false(ok, "empty release name should fail")
-	expect_true(err.code != 0, "empty release name should produce an error")
+	err2, ok2 := sqlite.db_release(test_db.db, "")
+	defer sqlite.error_destroy(&err2)
+	expect_false(ok2, "empty release name should fail")
+	expect_true(err2.code != 0, "empty release name should produce an error")
 
-	err, ok = sqlite.db_rollback_to(test_db.db, "")
-	expect_false(ok, "empty rollback_to name should fail")
-	expect_true(err.code != 0, "empty rollback_to name should produce an error")
+	err3, ok3 := sqlite.db_rollback_to(test_db.db, "")
+	defer sqlite.error_destroy(&err3)
+	expect_false(ok3, "empty rollback_to name should fail")
+	expect_true(err3.code != 0, "empty rollback_to name should produce an error")
+
+	err4, ok4 := sqlite.db_savepoint(test_db.db, "drop tables; --")
+	defer sqlite.error_destroy(&err4)
+	expect_false(ok4, "savepoint name with injection characters should be rejected")
+	expect_true(err4.code != 0, "savepoint name with injection characters should produce an error")
 }
 
 test_cache_prepare_reuse_and_clear :: proc() {

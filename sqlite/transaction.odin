@@ -1,6 +1,39 @@
 package sqlite
 
-import "core:fmt"
+import "core:strings"
+import raw "raw/generated"
+
+// Allowed characters in a SAVEPOINT identifier. SQLite has no parameter binding
+// for savepoint names, so the wrapper restricts callers to a conservative
+// alphanumeric + underscore identifier set to eliminate SQL injection through
+// the name.
+@(private)
+savepoint_name_is_safe :: proc(name: string) -> bool {
+	if name == "" {
+		return false
+	}
+	first := name[0]
+	if !((first >= 'a' && first <= 'z') ||
+	     (first >= 'A' && first <= 'Z') ||
+	     first == '_') {
+		return false
+	}
+	for i := 1; i < len(name); i += 1 {
+		ch := name[i]
+		if !((ch >= 'a' && ch <= 'z') ||
+		     (ch >= 'A' && ch <= 'Z') ||
+		     (ch >= '0' && ch <= '9') ||
+		     ch == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+@(private)
+savepoint_name_error :: proc() -> (Error, bool) {
+	return error_make(int(raw.MISUSE), "sqlite: savepoint name must be a non-empty identifier (letters, digits, underscore; cannot start with a digit)"), false
+}
 
 db_begin :: proc(db: DB) -> (Error, bool) {
 	return db_exec(db, "BEGIN")
@@ -27,38 +60,45 @@ db_rollback :: proc(db: DB) -> (Error, bool) {
 }
 
 db_savepoint :: proc(db: DB, name: string) -> (Error, bool) {
-	if name == "" {
-		return Error{
-			code    = 1,
-			message = "sqlite: savepoint name must not be empty",
-		}, false
+	if !savepoint_name_is_safe(name) {
+		return savepoint_name_error()
 	}
 
-	return db_exec(db, fmt.tprintf("SAVEPOINT %s", name))
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, "SAVEPOINT ")
+	strings.write_string(&b, name)
+	return db_exec(db, strings.to_string(b))
 }
 
 db_release :: proc(db: DB, name: string) -> (Error, bool) {
-	if name == "" {
-		return Error{
-			code    = 1,
-			message = "sqlite: savepoint name must not be empty",
-		}, false
+	if !savepoint_name_is_safe(name) {
+		return savepoint_name_error()
 	}
 
-	return db_exec(db, fmt.tprintf("RELEASE SAVEPOINT %s", name))
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, "RELEASE SAVEPOINT ")
+	strings.write_string(&b, name)
+	return db_exec(db, strings.to_string(b))
 }
 
 db_rollback_to :: proc(db: DB, name: string) -> (Error, bool) {
-	if name == "" {
-		return Error{
-			code    = 1,
-			message = "sqlite: savepoint name must not be empty",
-		}, false
+	if !savepoint_name_is_safe(name) {
+		return savepoint_name_error()
 	}
 
-	return db_exec(db, fmt.tprintf("ROLLBACK TO SAVEPOINT %s", name))
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, "ROLLBACK TO SAVEPOINT ")
+	strings.write_string(&b, name)
+	return db_exec(db, strings.to_string(b))
 }
 
+// db_with_transaction runs `body` inside an explicit BEGIN/COMMIT. On body
+// failure the transaction is rolled back and the body's error is returned. On
+// commit failure, the wrapper also attempts a defensive rollback (per SQLite a
+// failed COMMIT generally auto-rolls back, but calling ROLLBACK afterwards is
+// safe and clears any residual state). The body's returned Error is propagated
+// to the caller — if the body uses owned strings (via `error_make` or
+// `error_with_*`), the caller must release them with `error_destroy`.
 db_with_transaction :: proc(db: DB, body: proc(db: DB) -> (Error, bool)) -> (Error, bool) {
 	err, ok := db_begin(db)
 	if !ok {
@@ -69,12 +109,18 @@ db_with_transaction :: proc(db: DB, body: proc(db: DB) -> (Error, bool)) -> (Err
 	if !body_ok {
 		rollback_err, rollback_ok := db_rollback(db)
 		if !rollback_ok {
+			error_destroy(&body_err)
 			return rollback_err, false
 		}
 		return body_err, false
 	}
 
-	return db_commit(db)
+	commit_err, commit_ok := db_commit(db)
+	if !commit_ok {
+		_, _ = db_rollback(db) // defensive — ignore secondary errors
+		return commit_err, false
+	}
+	return commit_err, true
 }
 
 db_with_savepoint :: proc(db: DB, name: string, body: proc(db: DB) -> (Error, bool)) -> (Error, bool) {
@@ -87,6 +133,7 @@ db_with_savepoint :: proc(db: DB, name: string, body: proc(db: DB) -> (Error, bo
 	if !body_ok {
 		rollback_err, rollback_ok := db_rollback_to(db, name)
 		if !rollback_ok {
+			error_destroy(&body_err)
 			return rollback_err, false
 		}
 		return body_err, false

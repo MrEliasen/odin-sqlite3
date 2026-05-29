@@ -14,6 +14,13 @@ stmt_column_count :: proc(stmt: Stmt) -> int {
 	return int(raw.column_count(stmt.handle))
 }
 
+// stmt_column_name returns the name SQLite reports for `index` in `stmt`.
+//
+// Lifetime: the returned string is a BORROWED view into SQLite-managed memory.
+// Per SQLite docs the pointer is valid until the next call to
+// `sqlite3_column_name` on the same column, until the statement is finalized,
+// or until it is automatically re-prepared. Clone with `strings.clone` if you
+// need to retain the value across other SQLite calls.
 stmt_column_name :: proc(stmt: Stmt, index: int) -> string {
 	if stmt.handle == nil || !column_index_valid(index) {
 		return ""
@@ -27,6 +34,9 @@ stmt_column_name :: proc(stmt: Stmt, index: int) -> string {
 	return string(name)
 }
 
+// stmt_column_decltype returns the declared type of `index` in `stmt`.
+//
+// Lifetime: same borrowed semantics as `stmt_column_name`.
 stmt_column_decltype :: proc(stmt: Stmt, index: int) -> string {
 	if stmt.handle == nil || !column_index_valid(index) {
 		return ""

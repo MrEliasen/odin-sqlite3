@@ -113,6 +113,11 @@ stmt_finalize :: proc(stmt: ^Stmt) -> (Error, bool) {
 	return err, ok
 }
 
+// stmt_sql returns the original SQL text the statement was prepared from.
+//
+// Lifetime: BORROWED. SQLite owns the buffer for the statement's lifetime; the
+// returned string becomes invalid once `stmt_finalize` is called. Clone with
+// `strings.clone` if you need it to outlive the statement.
 stmt_sql :: proc(stmt: Stmt) -> string {
 	if stmt.handle == nil {
 		return ""

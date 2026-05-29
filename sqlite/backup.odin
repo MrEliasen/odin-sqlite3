@@ -21,11 +21,12 @@ backup_result_from_backup :: proc(backup: Backup, code: int, op: string) -> (Err
 		err_db.handle = backup.src_db
 	}
 
-	err := error_with_op(error_from_db(err_db, code), op)
+	err := error_from_db(err_db, code)
+	error_with_op(&err, op)
 
 	if backup.dst_schema_name != "" || backup.src_schema_name != "" {
-		err = error_with_context(
-			err,
+		error_with_context(
+			&err,
 			fmt.tprintf("dst_schema=%s src_schema=%s", backup.dst_schema_name, backup.src_schema_name),
 		)
 	}
@@ -51,13 +52,15 @@ backup_init :: proc(
 	src_schema: string = "main",
 ) -> (Backup, Error, bool) {
 	if dst_db.handle == nil || src_db.handle == nil {
-		err := error_with_op(error_from_db(DB{}, int(raw.MISUSE)), "backup_init")
-		err = error_with_context(err, "source and destination databases must both be open")
+		err := error_from_db(DB{}, int(raw.MISUSE))
+		error_with_op(&err, "backup_init")
+		error_with_context(&err, "source and destination databases must both be open")
 		return Backup{}, err, false
 	}
 	if dst_schema == "" || src_schema == "" {
-		err := error_with_op(error_from_db(dst_db, int(raw.MISUSE)), "backup_init")
-		err = error_with_context(err, "source and destination schema names must be non-empty")
+		err := error_from_db(dst_db, int(raw.MISUSE))
+		error_with_op(&err, "backup_init")
+		error_with_context(&err, "source and destination schema names must be non-empty")
 		return Backup{}, err, false
 	}
 
@@ -69,9 +72,10 @@ backup_init :: proc(
 
 	handle := raw.backup_init(dst_db.handle, c_dst_schema, src_db.handle, c_src_schema)
 	if handle == nil {
-		err := error_with_op(error_from_db(dst_db, db_errcode(dst_db)), "backup_init")
-		err = error_with_context(
-			err,
+		err := error_from_db(dst_db, db_errcode(dst_db))
+		error_with_op(&err, "backup_init")
+		error_with_context(
+			&err,
 			fmt.tprintf("dst_schema=%s src_schema=%s", dst_schema, src_schema),
 		)
 		return Backup{}, err, false
@@ -92,7 +96,8 @@ backup_init :: proc(
 
 backup_step :: proc(backup: Backup, page_count: int) -> (Backup_Step_Result, Error, bool) {
 	if backup.handle == nil {
-		err := error_with_op(error_from_db(DB{}, int(raw.MISUSE)), "backup_step")
+		err := error_from_db(DB{}, int(raw.MISUSE))
+		error_with_op(&err, "backup_step")
 		return .Invalid, err, false
 	}
 
@@ -141,7 +146,8 @@ backup_finish :: proc(backup: ^Backup) -> (Error, bool) {
 	backup.dst_db = nil
 
 	if rc != raw.OK {
-		err := error_with_op(error_from_db(DB{}, int(rc)), "backup_finish")
+		err := error_from_db(DB{}, int(rc))
+		error_with_op(&err, "backup_finish")
 		return err, false
 	}
 
@@ -153,7 +159,8 @@ backup_step_all :: proc(
 	page_count_per_step: int = -1,
 ) -> (Backup_Progress, Error, bool) {
 	if backup == nil || backup.handle == nil {
-		err := error_with_op(error_from_db(DB{}, int(raw.MISUSE)), "backup_step_all")
+		err := error_from_db(DB{}, int(raw.MISUSE))
+		error_with_op(&err, "backup_step_all")
 		return Backup_Progress{}, err, false
 	}
 
@@ -175,8 +182,9 @@ backup_step_all :: proc(
 			}
 			return backup_progress(backup^), wait_err, wait_ok
 		case .Invalid:
-			err := error_with_op(error_from_db(DB{}, int(raw.ERROR)), "backup_step_all")
-			err = error_with_context(err, "backup_step returned invalid state")
+			err := error_from_db(DB{}, int(raw.ERROR))
+			error_with_op(&err, "backup_step_all")
+			error_with_context(&err, "backup_step returned invalid state")
 			return backup_progress(backup^), err, false
 		}
 	}

@@ -163,19 +163,14 @@ That path gives you a good overview of:
   - Cleaning up nested row data from `db_query_all_struct(...)`
   - Releasing the outer returned slice after nested cleanup
 
-- `common_patterns/ownership_and_cleanup/main.odin`
-  - Caller-owned copied text/blob values
-  - Cleaning up `stmt_get_text(...)` and `stmt_get_blob(...)` results
-  - Cleaning up mapped struct fields from `db_query_one_struct(...)`
-  - Cleaning up nested row data from `db_query_all_struct(...)`
-  - Releasing the outer returned slice after nested cleanup
-
 - `common_patterns/errors/main.odin`
   - Structured error handling
   - `error_summary`
   - `error_string`
   - `error_code_name`
-  - Attaching extra context/op information
+  - Attaching extra context/op via in-place mutators (`error_with_context(&err, …)`)
+  - Releasing owned strings with `error_destroy(&err)`
+  - Constructing wrapper-shaped errors via `error_make`
 
 ---
 
@@ -229,6 +224,17 @@ For `db_query_all_struct(...)`, ownership is two-layered:
 
 - the returned slice is owned by you
 - any copied `string` / `[]u8` fields inside the returned rows are also owned by you
+- if the call fails mid-iteration the wrapper frees every previously appended row's copied fields plus the dynamic array before returning
+
+### Errors own their strings
+
+An `Error` returned with `ok == false` owns its `message` / `sql` / `ctx` / `op` strings. Release them with `sqlite.error_destroy(&err)` once you have logged or transformed the error.
+
+Successful calls return `error_none()` — no allocation, no destroy needed.
+
+The chain helpers (`error_with_context`, `error_with_op`, `error_with_sql`) take `^Error` and mutate in place. They free any previous value of the field they set.
+
+Use `sqlite.error_make(code, "message")` to construct wrapper-shaped errors yourself — never use an `Error{message = "literal"}` struct literal, because `error_destroy` would try to free a string literal.
 
 ### Expectation
 

@@ -261,6 +261,7 @@ test_statement_invalid_sql_returns_error :: proc() {
 
 	sql := "SELECT FROM"
 	stmt, err, ok := sqlite.stmt_prepare(test_db.db, sql)
+	defer sqlite.error_destroy(&err)
 
 	expect_false(ok, "invalid SQL should fail during prepare")
 	expect_false(sqlite.error_ok(err), "invalid SQL should return wrapper error")

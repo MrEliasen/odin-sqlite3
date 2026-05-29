@@ -1,5 +1,13 @@
 package raw
 
+// Bindgen reads this file as the foreign-import template and embeds its body
+// into sqlite/raw/generated/sqlite3.odin during `make generate`. Edit here, not
+// in the generated file — regeneration will overwrite the generated copy.
+//
+// This file itself is NOT compiled into the wrapper. The wrapper imports
+// `raw "raw/generated"` which already contains the embedded foreign-import
+// block. Keeping the template here keeps regeneration reproducible.
+
 // These defaults assume SQLite is already installed on the target system
 // and should be loaded from the system library path.
 @(private)

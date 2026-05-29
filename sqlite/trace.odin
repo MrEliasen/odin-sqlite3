@@ -95,24 +95,24 @@ trace_default_logger :: proc(event: Trace_Event, message: string) {
 	fmt.println(message)
 }
 
-trace_callback_default :: proc "c" (trace_type: u32, ctx: rawptr, p: rawptr, x: rawptr) -> i32 {
-	_ = ctx
-	_ = p
-	_ = x
-	_ = trace_type
-	return 0
-}
-
+// db_trace_enable configures wrapper-side trace logging on `db`. This does NOT
+// register a SQLite-side trace callback (sqlite3_trace_v2). The wrapper's
+// trace helpers — `db_trace_log_stmt`, `db_trace_log_profile`,
+// `db_trace_log_row`, `db_trace_log_close` — are invoked by application code at
+// the moments where logging is wanted, and they check the configured mask
+// before dispatching to the supplied logger.
+//
+// The earlier design registered a no-op C callback with SQLite for every event
+// the mask covered, which added overhead with no observable effect. If you
+// need actual SQLite-internal trace events, call `raw.trace_v2` directly.
 db_trace_enable :: proc(db: ^DB, config: Trace_Config) -> (Error, bool) {
 	if db == nil || db.handle == nil {
-		return error_with_op(error_from_db(DB{}, int(raw.MISUSE)), "trace_enable"), false
+		err := error_from_db(DB{}, int(raw.MISUSE))
+		error_with_op(&err, "trace_enable")
+		return err, false
 	}
 
 	mask := trace_event_mask(config)
-	rc := raw.trace_v2(db.handle, mask, trace_callback_default, nil)
-	if rc != raw.OK {
-		return error_with_op(error_from_db(db^, int(rc)), "trace_enable"), false
-	}
 
 	delete(db.trace_config.events)
 
@@ -131,12 +131,9 @@ db_trace_enable :: proc(db: ^DB, config: Trace_Config) -> (Error, bool) {
 
 db_trace_disable :: proc(db: ^DB) -> (Error, bool) {
 	if db == nil || db.handle == nil {
-		return error_with_op(error_from_db(DB{}, int(raw.MISUSE)), "trace_disable"), false
-	}
-
-	rc := raw.trace_v2(db.handle, 0, nil, nil)
-	if rc != raw.OK {
-		return error_with_op(error_from_db(db^, int(rc)), "trace_disable"), false
+		err := error_from_db(DB{}, int(raw.MISUSE))
+		error_with_op(&err, "trace_disable")
+		return err, false
 	}
 
 	delete(db.trace_config.events)

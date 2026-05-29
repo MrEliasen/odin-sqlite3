@@ -135,11 +135,18 @@ def patch_generated_file() -> PatchResult:
         applied += count
 
     # 3. SQLite destructor sentinels need Odin-compatible definitions.
+    # Odin's `::` constants cannot hold a transmuted proc pointer constructed
+    # from a uintptr literal, and `@(rodata)` requires a compile-time constant
+    # initializer which transmute is not. So these end up as package-scope
+    # runtime variables. Treat as read-only at call sites — never reassign.
     if "STATIC      :: ((destructor_type)0)" in text:
         text, count = replace_one_required(
             text,
             "STATIC      :: ((destructor_type)0)",
-            "STATIC      : Destructor_Type = nil",
+            "// SQLITE_STATIC sentinel: pass to bind_*/result_* when the\n"
+            "// caller-supplied buffer remains valid for SQLite's needs. Do\n"
+            "// NOT reassign — wrapper APIs depend on the original value.\n"
+            "STATIC: Destructor_Type = nil",
             "SQLITE_STATIC sentinel patch",
         )
         applied += count
@@ -148,7 +155,9 @@ def patch_generated_file() -> PatchResult:
         text, count = replace_one_required(
             text,
             "TRANSIENT   :: ((destructor_type)-1)",
-            "TRANSIENT   : Destructor_Type = transmute(Destructor_Type)(~uintptr(0))",
+            "// SQLITE_TRANSIENT sentinel: tells SQLite to make its own copy of\n"
+            "// the caller-supplied buffer. Do NOT reassign.\n"
+            "TRANSIENT: Destructor_Type = transmute(Destructor_Type)(~uintptr(0))",
             "SQLITE_TRANSIENT sentinel patch",
         )
         applied += count
@@ -234,6 +243,11 @@ def patch_generated_file() -> PatchResult:
 
     if "STATIC      :: ((destructor_type)0)" in text or "TRANSIENT   :: ((destructor_type)-1)" in text:
         fail("post-patch verification failed: destructor sentinels still in invalid form")
+
+    if "STATIC: Destructor_Type = nil" not in text:
+        fail("post-patch verification failed: STATIC patch missing")
+    if "TRANSIENT: Destructor_Type = transmute(Destructor_Type)(~uintptr(0))" not in text:
+        fail("post-patch verification failed: TRANSIENT patch missing")
 
     if "expanded_sql :: proc(pStmt: ^Stmt) -> rawptr ---" not in text:
         fail("post-patch verification failed: expanded_sql is not patched to rawptr")

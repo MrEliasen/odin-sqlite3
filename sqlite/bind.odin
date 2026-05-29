@@ -10,8 +10,8 @@ stmt_bind_error :: proc(stmt: Stmt) -> (Error, bool) {
 
 stmt_bind_args_error :: proc(stmt: Stmt, message: string) -> (Error, bool) {
 	err := error_from_stmt(stmt, int(raw.RANGE))
-	err = error_with_op(err, "stmt_bind_args")
-	err = error_with_context(err, message)
+	error_with_op(&err, "stmt_bind_args")
+	error_with_context(&err, message)
 	return err, false
 }
 
@@ -24,10 +24,10 @@ stmt_clear_bound_storage :: proc(stmt: ^Stmt) {
 		return
 	}
 
-	for c_value in stmt.bound_text_storage {
+	for _, c_value in stmt.bound_text_storage {
 		delete(c_value)
 	}
-	for blob in stmt.bound_blob_storage {
+	for _, blob in stmt.bound_blob_storage {
 		delete(blob)
 	}
 
@@ -35,24 +35,45 @@ stmt_clear_bound_storage :: proc(stmt: ^Stmt) {
 	clear(&stmt.bound_blob_storage)
 }
 
-stmt_bind_track_text :: proc(stmt: ^Stmt, value: string) -> cstring {
+@(private)
+stmt_release_text_slot :: proc(stmt: ^Stmt, index: i32) {
+	if existing, ok := stmt.bound_text_storage[index]; ok {
+		delete(existing)
+		delete_key(&stmt.bound_text_storage, index)
+	}
+}
+
+@(private)
+stmt_release_blob_slot :: proc(stmt: ^Stmt, index: i32) {
+	if existing, ok := stmt.bound_blob_storage[index]; ok {
+		delete(existing)
+		delete_key(&stmt.bound_blob_storage, index)
+	}
+}
+
+// stmt_bind_track_text clones `value` into a cstring owned by stmt for this
+// parameter slot. The previous value bound to the same slot (if any) is freed,
+// so rebinding the same slot does not leak.
+stmt_bind_track_text :: proc(stmt: ^Stmt, index: i32, value: string) -> cstring {
+	stmt_release_text_slot(stmt, index)
 	c_value := strings.clone_to_cstring(value)
-	append(&stmt.bound_text_storage, c_value)
+	stmt.bound_text_storage[index] = c_value
 	return c_value
 }
 
-stmt_bind_track_blob :: proc(stmt: ^Stmt, value: []u8) -> rawptr {
+// stmt_bind_track_blob clones `value` into a slice owned by stmt for this
+// parameter slot. The previous value bound to the same slot is freed.
+stmt_bind_track_blob :: proc(stmt: ^Stmt, index: i32, value: []u8) -> rawptr {
+	stmt_release_blob_slot(stmt, index)
 	if len(value) == 0 {
-		stored := []u8{}
-		append(&stmt.bound_blob_storage, stored)
+		stmt.bound_blob_storage[index] = []u8{}
 		return nil
 	}
 
 	stored := make([]u8, len(value))
 	copy(stored, value)
-	append(&stmt.bound_blob_storage, stored)
-	last := stmt.bound_blob_storage[len(stmt.bound_blob_storage)-1]
-	return rawptr(&last[0])
+	stmt.bound_blob_storage[index] = stored
+	return rawptr(&stmt.bound_blob_storage[index][0])
 }
 
 stmt_bind_null :: proc(stmt: ^Stmt, index: int) -> (Error, bool) {
@@ -102,8 +123,14 @@ stmt_bind_text :: proc(stmt: ^Stmt, index: int, value: string) -> (Error, bool) 
 	if stmt == nil || stmt.handle == nil || !bind_index_valid(index) {
 		return stmt_bind_error(Stmt{})
 	}
+	if len(value) > int(max(i32)) {
+		err := error_from_stmt(stmt^, int(raw.TOOBIG))
+		error_with_op(&err, "stmt_bind_text")
+		error_with_context(&err, "text value exceeds 2 GiB; sqlite3_bind_text length is i32")
+		return err, false
+	}
 
-	c_value := stmt_bind_track_text(stmt, value)
+	c_value := stmt_bind_track_text(stmt, i32(index), value)
 
 	rc := raw.bind_text(
 		stmt.handle,
@@ -119,8 +146,14 @@ stmt_bind_blob :: proc(stmt: ^Stmt, index: int, value: []u8) -> (Error, bool) {
 	if stmt == nil || stmt.handle == nil || !bind_index_valid(index) {
 		return stmt_bind_error(Stmt{})
 	}
+	if len(value) > int(max(i32)) {
+		err := error_from_stmt(stmt^, int(raw.TOOBIG))
+		error_with_op(&err, "stmt_bind_blob")
+		error_with_context(&err, "blob value exceeds 2 GiB; sqlite3_bind_blob length is i32")
+		return err, false
+	}
 
-	data_ptr := stmt_bind_track_blob(stmt, value)
+	data_ptr := stmt_bind_track_blob(stmt, i32(index), value)
 
 	rc := raw.bind_blob(
 		stmt.handle,
@@ -160,6 +193,11 @@ stmt_param_index :: proc(stmt: Stmt, name: string) -> int {
 	return int(raw.bind_parameter_index(stmt.handle, c_name))
 }
 
+// stmt_param_name returns the textual name of parameter `index` ("?N",
+// ":name", "@name", "$name") or "" for nameless `?` parameters.
+//
+// Lifetime: BORROWED from the statement; valid until the statement is
+// finalized. Clone with `strings.clone` if you need it longer.
 stmt_param_name :: proc(stmt: Stmt, index: int) -> string {
 	if stmt.handle == nil || !bind_index_valid(index) {
 		return ""

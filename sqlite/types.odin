@@ -13,8 +13,14 @@ Stmt :: struct {
 	db:                 ^raw.Sqlite3,
 	sql:                string,
 	owned_sql:          bool,
-	bound_text_storage: [dynamic]cstring,
-	bound_blob_storage: [dynamic][]u8,
+	// bound_text_storage / bound_blob_storage hold per-parameter-slot copies of
+	// caller text/blob values. They are passed to sqlite3_bind_text /
+	// sqlite3_bind_blob with SQLITE_STATIC, so SQLite reads from these slices
+	// until the statement is reset/finalized or the slot is rebound. Rebinding
+	// a slot frees its prior entry — see `stmt_bind_track_text` /
+	// `stmt_bind_track_blob` in bind.odin.
+	bound_text_storage: map[i32]cstring,
+	bound_blob_storage: map[i32][]u8,
 }
 
 Blob :: struct {

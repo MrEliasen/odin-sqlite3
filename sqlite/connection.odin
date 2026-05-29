@@ -40,9 +40,10 @@ db_open :: proc(path: string, flags: int = DEFAULT_OPEN_FLAGS, vfs: string = "")
 
 db_open_into :: proc(db: ^DB, path: string, flags: int = DEFAULT_OPEN_FLAGS, vfs: string = "") -> (Error, bool) {
 	if db == nil {
-		return Error{
-			code = int(raw.MISUSE),
-		}, false
+		return error_make(int(raw.MISUSE), "sqlite: db_open_into requires a non-nil DB pointer"), false
+	}
+	if db.handle != nil {
+		return error_make(int(raw.MISUSE), "sqlite: db_open_into refuses to overwrite an already-open DB; close it first"), false
 	}
 
 	opened, err, ok := db_open(path, flags, vfs)
@@ -50,7 +51,7 @@ db_open_into :: proc(db: ^DB, path: string, flags: int = DEFAULT_OPEN_FLAGS, vfs
 		return err, false
 	}
 
-	db.handle = opened.handle
+	db^ = opened
 	return error_none(), true
 }
 
@@ -65,11 +66,18 @@ db_close :: proc(db: ^DB) -> (Error, bool) {
 	}
 
 	delete(db.trace_config.events)
-
+	db.trace_config = Trace_Config{}
+	db.trace_enabled = false
 	db.handle = nil
 	return error_none(), true
 }
 
+// db_errmsg returns SQLite's last error message for `db`.
+//
+// Lifetime: BORROWED. Per SQLite docs the pointer is valid only until the next
+// SQLite call on the same DB. Clone with `strings.clone` if you need to retain
+// the message. Most callers should prefer the `Error` value returned by
+// wrapper procs — its `message` field is an owned copy.
 db_errmsg :: proc(db: DB) -> string {
 	if db.handle == nil {
 		return ""
@@ -99,6 +107,11 @@ db_extended_errcode :: proc(db: DB) -> int {
 	return int(raw.extended_errcode(db.handle))
 }
 
+// db_errstr returns SQLite's English-language explanation of `code`.
+//
+// Lifetime: BORROWED from SQLite's static error-string table; valid for the
+// program's lifetime (sqlite3.h: "The memory ... is managed internally and must
+// not be freed").
 db_errstr :: proc(code: int) -> string {
 	msg := raw.errstr(i32(code))
 	if msg == nil {
