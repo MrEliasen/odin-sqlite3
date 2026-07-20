@@ -1,7 +1,7 @@
 package main
-import "core:mem"
 
 import "core:fmt"
+import example_support "../../_support"
 import sqlite "../../../../sqlite"
 
 User_Row :: struct {
@@ -66,26 +66,7 @@ print_user_by_id :: proc(db: sqlite.DB, user_id: i64) {
 	)
 }
 
-main :: proc() {
-	tracking_allocator: mem.Tracking_Allocator
-	mem.tracking_allocator_init(&tracking_allocator, context.allocator)
-	context.allocator = mem.tracking_allocator(&tracking_allocator)
-	defer {
-		if len(tracking_allocator.allocation_map) > 0 {
-			fmt.eprintf("=== %v allocations not freed: ===\n", len(tracking_allocator.allocation_map))
-			for _, entry in tracking_allocator.allocation_map {
-				fmt.eprintf("- %v bytes @ %v\n", entry.size, entry.location)
-			}
-		}
-		if len(tracking_allocator.bad_free_array) > 0 {
-			fmt.eprintf("=== %v incorrect frees: ===\n", len(tracking_allocator.bad_free_array))
-			for entry in tracking_allocator.bad_free_array {
-				fmt.eprintf("- %p @ %v\n", entry.memory, entry.location)
-			}
-		}
-		mem.tracking_allocator_destroy(&tracking_allocator)
-	}
-
+example_main :: proc() {
 	db, err, ok := sqlite.db_open(":memory:")
 	if !ok {
 		fmt.println("open failed:", sqlite.error_string(err))
@@ -134,4 +115,8 @@ main :: proc() {
 	fmt.println("- if you instead use context.temp_allocator, you usually would not individually delete those values")
 
 	fmt.println("struct_mapping example completed successfully")
+}
+
+main :: proc() {
+	example_support.run(example_main)
 }
