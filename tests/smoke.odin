@@ -19,6 +19,7 @@ run_connection_tests :: proc() {
 	run_test("connection_errmsg_and_errcode_after_sql_error", test_connection_errmsg_and_errcode_after_sql_error)
 	run_test("connection_transaction_state_tracks_autocommit", test_connection_transaction_state_tracks_autocommit)
 	run_test("connection_interrupt_flag_roundtrip", test_connection_interrupt_flag_roundtrip)
+	run_test("connection_rejects_narrowing_wraps", test_connection_rejects_narrowing_wraps)
 }
 
 run_statement_tests :: proc() {
@@ -34,6 +35,7 @@ run_statement_tests :: proc() {
 	run_test("statement_bind_parameter_metadata", test_statement_bind_parameter_metadata)
 	run_test("statement_named_binding_and_reuse", test_statement_named_binding_and_reuse)
 	run_test("statement_invalid_sql_returns_error", test_statement_invalid_sql_returns_error)
+	run_test("statement_owns_sql_and_rejects_narrowing_wraps", test_statement_owns_sql_and_rejects_narrowing_wraps)
 }
 
 run_bind_tests :: proc() {
@@ -43,6 +45,9 @@ run_bind_tests :: proc() {
 	run_test("bind_empty_text_parameter_roundtrip", test_bind_empty_text_parameter_roundtrip)
 	run_test("bind_blob_parameter_roundtrip", test_bind_blob_parameter_roundtrip)
 	run_test("bind_empty_blob_parameter_roundtrip", test_bind_empty_blob_parameter_roundtrip)
+	run_test("bind_failed_busy_rebind_preserves_original_storage", test_bind_failed_busy_rebind_preserves_original_storage)
+	run_test("bind_successful_type_rebind_releases_obsolete_storage", test_bind_successful_type_rebind_releases_obsolete_storage)
+	run_test("bind_huge_index_and_nil_named_helpers_are_safe", test_bind_huge_index_and_nil_named_helpers_are_safe)
 	run_test("bind_zeroblob_parameter_roundtrip", test_bind_zeroblob_parameter_roundtrip)
 	run_test("bind_named_parameters_roundtrip", test_bind_named_parameters_roundtrip)
 	run_test("bind_generic_bind_arg_roundtrip", test_bind_generic_bind_arg_roundtrip)
@@ -67,9 +72,11 @@ run_transaction_tests :: proc() {
 	run_test("transaction_savepoint_release_and_rollback_to", test_transaction_savepoint_release_and_rollback_to)
 	run_test("transaction_with_transaction_helper", test_transaction_with_transaction_helper)
 	run_test("transaction_with_savepoint_helper", test_transaction_with_savepoint_helper)
+	run_test("failed_top_level_savepoint_restores_autocommit", test_failed_top_level_savepoint_restores_autocommit)
 	run_test("transaction_invalid_savepoint_name_is_rejected", test_transaction_invalid_savepoint_name_is_rejected)
 	run_test("cache_prepare_reuse_and_clear", test_cache_prepare_reuse_and_clear)
 	run_test("cache_usage_tracking_and_prune_unused", test_cache_usage_tracking_and_prune_unused)
+	run_test("cache_is_connection_and_prepare_flags_safe", test_cache_is_connection_and_prepare_flags_safe)
 	run_test("operational_busy_timeout_and_wal_checkpoint", test_operational_busy_timeout_and_wal_checkpoint)
 	run_test("operational_stmt_consume_done_and_with_stmt", test_operational_stmt_consume_done_and_with_stmt)
 }
@@ -80,6 +87,7 @@ run_error_and_extra_api_tests :: proc() {
 	run_test("blob_api", test_blob_api)
 	run_test("backup_api", test_backup_api)
 	run_test("row_mapping_by_field_name", test_row_mapping_by_field_name)
+	run_test("row_mapping_column_index_owns_keys_across_reprepare", test_row_mapping_column_index_owns_keys_across_reprepare)
 	run_test("row_mapping_by_struct_tag", test_row_mapping_by_struct_tag)
 	run_test("row_mapping_unmatched_fields_are_ignored", test_row_mapping_unmatched_fields_are_ignored)
 	run_test("row_mapping_nulls_follow_wrapper_defaults", test_row_mapping_nulls_follow_wrapper_defaults)
@@ -93,6 +101,8 @@ run_error_and_extra_api_tests :: proc() {
 	run_test("row_mapping_using_inner_struct", test_row_mapping_using_inner_struct)
 	run_test("row_mapping_integer_range_error", test_row_mapping_integer_range_error)
 	run_test("row_mapping_db_query_all_struct_leaves_no_leaks_on_error", test_row_mapping_db_query_all_struct_leaves_no_leaks_on_error)
+	run_test("row_mapping_failure_leaves_preexisting_fields_untouched", test_row_mapping_failure_leaves_preexisting_fields_untouched)
+	run_test("row_mapping_replacement_contract_is_explicit_and_leak_free", test_row_mapping_replacement_contract_is_explicit_and_leak_free)
 }
 
 main :: proc() {

@@ -3,10 +3,19 @@ package sqlite
 import "core:strings"
 import raw "raw/generated"
 
-DEFAULT_OPEN_FLAGS :: int(raw.OPEN_READWRITE | raw.OPEN_CREATE | raw.OPEN_URI | raw.OPEN_NOMUTEX)
+// Request SQLite's serialized per-connection mode by default. Callers may
+// supply different flags, but must externally serialize every use of a DB and
+// its derived statements/blobs/backups if OPEN_NOMUTEX is selected. The
+// wrapper's own mutable trace and statement-cache state is not synchronized.
+DEFAULT_OPEN_FLAGS :: int(raw.OPEN_READWRITE | raw.OPEN_CREATE | raw.OPEN_URI | raw.OPEN_FULLMUTEX)
 
 db_open :: proc(path: string, flags: int = DEFAULT_OPEN_FLAGS, vfs: string = "") -> (DB, Error, bool) {
 	db := DB{}
+	if flags < 0 || flags > int(max(i32)) {
+		err := error_make(int(raw.RANGE), "sqlite: open flags exceed SQLite's i32 range")
+		error_with_op(&err, "db_open")
+		return DB{}, err, false
+	}
 
 	c_path := strings.clone_to_cstring(path)
 	defer delete(c_path)
@@ -65,11 +74,21 @@ db_close :: proc(db: ^DB) -> (Error, bool) {
 		return error_from_db(db^, int(rc), ""), false
 	}
 
-	delete(db.trace_config.events)
+	if len(db.trace_config.events) > 0 {
+		trace_config_destroy(&db.trace_config, db.trace_allocator)
+	}
 	db.trace_config = Trace_Config{}
+	db.trace_allocator = {}
 	db.trace_enabled = false
 	db.handle = nil
 	return error_none(), true
+}
+
+// db_close_cleanup is for deferred cleanup paths without an error result
+// channel. Prefer db_close when the caller can surface cleanup failures.
+db_close_cleanup :: proc(db: ^DB) {
+	err, _ := db_close(db)
+	error_destroy(&err)
 }
 
 // db_errmsg returns SQLite's last error message for `db`.
@@ -113,6 +132,9 @@ db_extended_errcode :: proc(db: DB) -> int {
 // program's lifetime (sqlite3.h: "The memory ... is managed internally and must
 // not be freed").
 db_errstr :: proc(code: int) -> string {
+	if code < int(min(i32)) || code > int(max(i32)) {
+		return ""
+	}
 	msg := raw.errstr(i32(code))
 	if msg == nil {
 		return ""
@@ -137,6 +159,12 @@ db_set_extended_errors :: proc(db: DB, enabled: bool) -> (Error, bool) {
 db_set_busy_timeout :: proc(db: DB, timeout_ms: int) -> (Error, bool) {
 	if db.handle == nil {
 		return error_from_db(db, int(raw.MISUSE), ""), false
+	}
+	if timeout_ms < int(min(i32)) || timeout_ms > int(max(i32)) {
+		err := error_from_db(db, int(raw.RANGE))
+		error_with_op(&err, "db_set_busy_timeout")
+		error_with_context(&err, "timeout exceeds SQLite's i32 millisecond range")
+		return err, false
 	}
 
 	rc := raw.busy_timeout(db.handle, i32(timeout_ms))

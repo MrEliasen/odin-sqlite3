@@ -1,6 +1,7 @@
 package tests
 
 import "core:mem"
+import "core:strings"
 import sqlite "../sqlite"
 
 Row_User_Basic :: struct {
@@ -69,6 +70,11 @@ Row_With_String_And_Small_Int :: struct {
 	tiny:  i8,
 }
 
+Row_Replace_Owned :: struct {
+	name:    string,
+	payload: []u8,
+}
+
 test_row_mapping_by_field_name :: proc() {
 	test_db := test_db_open("row_mapping_by_field_name")
 	defer test_db_close(&test_db)
@@ -87,6 +93,63 @@ test_row_mapping_by_field_name :: proc() {
 	expect_eq(row.name, "alice", "field-name mapping should populate name")
 	expect_true(row.active, "field-name mapping should populate bool field")
 	expect_eq(row.score, 9.5, "field-name mapping should populate f64 field")
+}
+
+test_row_mapping_column_index_owns_keys_across_reprepare :: proc() {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	defer mem.tracking_allocator_destroy(&tracker)
+	tracked := mem.tracking_allocator(&tracker)
+
+	test_db := test_db_open("row_mapping_column_index_owns_keys_across_reprepare")
+	defer test_db_close(&test_db)
+	exec_ok(test_db.db, "CREATE TABLE reprepare_rows(id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+	exec_ok(test_db.db, "INSERT INTO reprepare_rows(name) VALUES ('alpha')")
+
+	other, open_err, open_ok := sqlite.db_open(test_db.path)
+	expect_no_error(open_err, open_ok, "open second connection for schema change")
+	defer {
+		close_err, close_ok := sqlite.db_close(&other)
+		expect_no_error(close_err, close_ok, "close second schema-change connection")
+	}
+
+	id_alias := "row_mapping_owned_identifier_column"
+	name_alias := "row_mapping_owned_display_name_column"
+	sql := "SELECT id AS row_mapping_owned_identifier_column, " +
+		"name AS row_mapping_owned_display_name_column FROM reprepare_rows"
+	stmt := prepare_ok(test_db.db, sql)
+	defer finalize_ok(&stmt, sql)
+
+	borrowed_id := sqlite.stmt_column_name(stmt, 0)
+	column_index := sqlite.row_mapping_build_column_index(stmt, tracked)
+	owned_id := ""
+	for key, _ in column_index {
+		if key == id_alias {
+			owned_id = key
+		}
+	}
+	expect_eq(owned_id, id_alias, "column index should contain the first alias")
+	expect_true(
+		raw_data(owned_id) != raw_data(borrowed_id),
+		"column-index keys must be cloned instead of borrowing SQLite metadata",
+	)
+
+	// Changing the schema after prepare forces sqlite3_step() to automatically
+	// re-prepare this sqlite3_prepare_v2 statement, invalidating borrowed column
+	// name pointers from the original prepared program.
+	exec_ok(other, "ALTER TABLE reprepare_rows ADD COLUMN extra INTEGER")
+	step_expect_row(stmt, sql)
+
+	id_index, id_found := sqlite.row_mapping_lookup_column_index(column_index, id_alias)
+	name_index, name_found := sqlite.row_mapping_lookup_column_index(column_index, name_alias)
+	expect_true(id_found, "owned id key should survive automatic reprepare")
+	expect_true(name_found, "owned name key should survive automatic reprepare")
+	expect_eq(id_index, 0, "owned id key should retain its column index")
+	expect_eq(name_index, 1, "owned name key should retain its column index")
+
+	sqlite.row_mapping_destroy_column_index(column_index, tracked)
+	expect_eq(len(tracker.allocation_map), 0, "destroying the column index must release its map and cloned keys")
+	expect_eq(len(tracker.bad_free_array), 0, "destroying cloned column keys must not perform invalid frees")
 }
 
 test_row_mapping_by_struct_tag :: proc() {
@@ -139,8 +202,6 @@ test_row_mapping_nulls_follow_wrapper_defaults :: proc() {
 	step_expect_row(stmt, sql)
 
 	row := Row_User_Nulls{
-		name    = "non-empty",
-		payload = []u8{1, 2, 3},
 		score   = 4.5,
 		active  = true,
 	}
@@ -387,4 +448,59 @@ test_row_mapping_db_query_all_struct_leaves_no_leaks_on_error :: proc() {
 	bad_free_count := len(tracker.bad_free_array)
 	expect_eq(leak_count, 0, "db_query_all_struct error path must free all per-row owned data")
 	expect_eq(bad_free_count, 0, "db_query_all_struct error path must not double-free")
+}
+
+test_row_mapping_failure_leaves_preexisting_fields_untouched :: proc() {
+	test_db := test_db_open("row_mapping_failure_leaves_preexisting_fields_untouched")
+	defer test_db_close(&test_db)
+
+	stmt := prepare_ok(test_db.db, "SELECT 1 AS id, 'new' AS name, 999 AS tiny")
+	defer finalize_ok(&stmt)
+	step_expect_row(stmt)
+
+	row := Row_With_String_And_Small_Int{id = 77, name = "borrowed", tiny = 7}
+	err, ok := sqlite.stmt_scan_struct(stmt, &row)
+	defer sqlite.error_destroy(&err)
+	expect_false(ok, "overflow after decoding text should fail transactionally")
+	expect_eq(row.id, i64(77), "failed scan must leave scalar fields unchanged")
+	expect_eq(row.name, "borrowed", "failed scan must not free or overwrite borrowed caller text")
+	expect_eq(row.tiny, i8(7), "failed scan must leave later fields unchanged")
+}
+
+test_row_mapping_replacement_contract_is_explicit_and_leak_free :: proc() {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	defer mem.tracking_allocator_destroy(&tracker)
+	tracked := mem.tracking_allocator(&tracker)
+
+	test_db := test_db_open("row_mapping_replacement_contract_is_explicit_and_leak_free")
+	defer test_db_close(&test_db)
+	stmt := prepare_ok(test_db.db, "SELECT 'new' AS name, x'010203' AS payload")
+	defer finalize_ok(&stmt)
+	step_expect_row(stmt)
+
+	row := Row_Replace_Owned{
+		name = strings.clone("old", tracked),
+		payload = make([]u8, 2, tracked),
+	}
+	row.payload[0] = 9
+	row.payload[1] = 8
+
+	// The default refuses to guess ownership and leaves the destination intact.
+	reject_err, reject_ok := sqlite.stmt_scan_struct(stmt, &row, tracked)
+	defer sqlite.error_destroy(&reject_err)
+	expect_false(reject_ok, "non-empty mapped owned fields require an explicit replacement mode")
+	expect_eq(row.name, "old", "rejected replacement must leave existing text unchanged")
+	expect_eq(row.payload[0], u8(9), "rejected replacement must leave existing blob unchanged")
+
+	err, ok := sqlite.stmt_scan_struct(stmt, &row, tracked, .Delete_Existing)
+	expect_no_error(err, ok, "explicit allocator-owned replacement should succeed")
+	expect_eq(row.name, "new", "explicit replacement should install decoded text")
+	expect_eq(len(row.payload), 3, "explicit replacement should install decoded blob")
+	expect_eq(row.payload[2], u8(3), "decoded replacement blob should preserve bytes")
+
+	delete(row.name, tracked)
+	delete(row.payload, tracked)
+	expect_eq(len(tracker.allocation_map), 0, "replacement should release old fields and caller cleanup should release new fields")
+	expect_eq(len(tracker.bad_free_array), 0, "replacement contract must not free unrelated memory")
 }

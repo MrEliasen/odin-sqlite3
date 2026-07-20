@@ -17,7 +17,7 @@ print_optional_product :: proc(db: sqlite.DB, sku: string) {
 		fmt.printf("sku=%q -> no row found\n", sku)
 		return
 	}
-	defer sqlite.stmt_finalize(&stmt)
+	defer sqlite.stmt_finalize_cleanup(&stmt)
 
 	fmt.printf(
 		"sku=%q -> id=%d name=%q price_cents=%d in_stock=%v\n",
@@ -54,7 +54,7 @@ main :: proc() {
 		fmt.println("open failed:", sqlite.error_string(err))
 		return
 	}
-	defer sqlite.db_close(&db)
+	defer sqlite.db_close_cleanup(&db)
 
 	err, ok = sqlite.db_exec(db, `
 		CREATE TABLE products(
@@ -95,7 +95,7 @@ main :: proc() {
 		return
 	}
 	if found {
-		defer sqlite.stmt_finalize(&stmt)
+		defer sqlite.stmt_finalize_cleanup(&stmt)
 		fmt.printf(
 			"first in-stock product -> id=%d name=%q\n",
 			sqlite.stmt_get_i64(stmt, 0),

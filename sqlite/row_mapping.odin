@@ -2,7 +2,9 @@ package sqlite
 
 import "base:runtime"
 import "core:fmt"
+import "core:mem"
 import "core:reflect"
+import "core:strings"
 import raw "raw/generated"
 
 row_mapping_op :: "stmt_scan_struct"
@@ -31,13 +33,19 @@ query_all_struct_op :: "db_query_all_struct"
 // - any copied field data written into `out` is owned by the caller
 // - when `allocator` is a non-temporary allocator, the caller is responsible for releasing those
 //   mapped fields when appropriate
-// - if this proc fails mid-struct, any field data already copied into `out` is freed via the same
-//   `allocator` before returning; `out` is left in a partially-written state but contains no
-//   dangling owned slices
+// - decoding is transactional: any failure leaves all of `out` unchanged
+// - by default, a non-empty mapped string/[]u8 destination is rejected because
+//   its ownership cannot be inferred; pass .Delete_Existing only when those
+//   mapped values were allocated by `allocator`
 //
 // Lifetime:
 // - copied `string` and `[]u8` fields remain valid independently of later `step/reset/finalize` calls
-stmt_scan_struct :: proc(stmt: Stmt, out: ^$T, allocator := context.allocator) -> (Error, bool) {
+stmt_scan_struct :: proc(
+	stmt: Stmt,
+	out: ^$T,
+	allocator := context.allocator,
+	replace_mode: Row_Replace_Mode = .Reject_Non_Empty,
+) -> (Error, bool) {
 	if out == nil {
 		err := error_from_stmt(stmt, int(raw.MISUSE))
 		error_with_op(&err, row_mapping_op)
@@ -69,13 +77,24 @@ stmt_scan_struct :: proc(stmt: Stmt, out: ^$T, allocator := context.allocator) -
 	}
 
 	column_index_by_name := row_mapping_build_column_index(stmt, context.temp_allocator)
-	defer delete(column_index_by_name)
+	defer row_mapping_destroy_column_index(column_index_by_name, context.temp_allocator)
 
-	err, ok := row_mapping_assign_struct(rawptr(out), base_info, stmt, column_index_by_name, allocator)
+	// Decode into a zeroed temporary so neither partial scalar writes nor
+	// newly allocated fields can mutate/free caller memory on failure.
+	temp := T{}
+	err, ok := row_mapping_assign_struct(rawptr(&temp), base_info, stmt, column_index_by_name, allocator)
 	if !ok {
-		row_mapping_free_struct_owned(rawptr(out), base_info, allocator)
+		row_mapping_free_struct_owned(rawptr(&temp), base_info, allocator)
 		return err, false
 	}
+
+	err, ok = row_mapping_preflight_commit(rawptr(out), base_info, stmt, column_index_by_name, replace_mode)
+	if !ok {
+		row_mapping_free_struct_owned(rawptr(&temp), base_info, allocator)
+		return err, false
+	}
+
+	row_mapping_commit_struct(rawptr(out), rawptr(&temp), base_info, column_index_by_name, allocator, replace_mode)
 
 	return error_none(), true
 }
@@ -96,15 +115,16 @@ db_query_one_struct :: proc(
 	out: ^$T,
 	flags: int = DEFAULT_PREPARE_FLAGS,
 	allocator := context.allocator,
+	replace_mode: Row_Replace_Mode = .Reject_Non_Empty,
 ) -> (Error, bool) {
 	stmt, err, ok := db_query_one(db, sql, flags)
 	if !ok {
 		error_with_op(&err, query_one_struct_op)
 		return err, false
 	}
-	defer stmt_finalize(&stmt)
+	defer stmt_finalize_cleanup(&stmt)
 
-	scan_err, scan_ok := stmt_scan_struct(stmt, out, allocator)
+	scan_err, scan_ok := stmt_scan_struct(stmt, out, allocator, replace_mode)
 	if !scan_ok {
 		error_with_op(&scan_err, query_one_struct_op)
 		return scan_err, false
@@ -129,6 +149,7 @@ db_query_optional_struct :: proc(
 	out: ^$T,
 	flags: int = DEFAULT_PREPARE_FLAGS,
 	allocator := context.allocator,
+	replace_mode: Row_Replace_Mode = .Reject_Non_Empty,
 ) -> (bool, Error, bool) {
 	stmt, found, err, ok := db_query_optional(db, sql, flags)
 	if !ok {
@@ -138,9 +159,9 @@ db_query_optional_struct :: proc(
 	if !found {
 		return false, error_none(), true
 	}
-	defer stmt_finalize(&stmt)
+	defer stmt_finalize_cleanup(&stmt)
 
-	scan_err, scan_ok := stmt_scan_struct(stmt, out, allocator)
+	scan_err, scan_ok := stmt_scan_struct(stmt, out, allocator, replace_mode)
 	if !scan_ok {
 		error_with_op(&scan_err, query_optional_struct_op)
 		return false, scan_err, false
@@ -172,7 +193,7 @@ db_query_all_struct :: proc(
 		error_with_op(&err, query_all_struct_op)
 		return nil, err, false
 	}
-	defer stmt_finalize(&stmt)
+	defer stmt_finalize_cleanup(&stmt)
 
 	type_info := type_info_of(typeid_of(T))
 	base_info := reflect.type_info_base(type_info)
@@ -186,7 +207,7 @@ db_query_all_struct :: proc(
 	// Precompute the column-name → index map once per query rather than re-scanning column names
 	// for every field of every row.
 	column_index_by_name := row_mapping_build_column_index(stmt, context.temp_allocator)
-	defer delete(column_index_by_name)
+	defer row_mapping_destroy_column_index(column_index_by_name, context.temp_allocator)
 
 	rows := make([dynamic]T, 0, 0, allocator)
 	for {
@@ -219,8 +240,10 @@ db_query_all_struct :: proc(
 }
 
 // row_mapping_build_column_index returns a freshly allocated `map[string]int` from
-// SQLite column name → column index for `stmt`. Keys are borrowed views into SQLite's stable
-// per-statement strings (valid for the statement's lifetime).
+// SQLite column name → column index for `stmt`. Keys are owned clones allocated
+// with `allocator`, so they remain valid if SQLite automatically re-prepares the
+// statement during the first step. Release the result with
+// `row_mapping_destroy_column_index` and the same allocator.
 row_mapping_build_column_index :: proc(stmt: Stmt, allocator := context.temp_allocator) -> map[string]int {
 	out: map[string]int
 	column_count := stmt_column_count(stmt)
@@ -235,10 +258,20 @@ row_mapping_build_column_index :: proc(stmt: Stmt, allocator := context.temp_all
 		}
 		// First occurrence wins to match the previous linear-scan behaviour.
 		if _, exists := out[name]; !exists {
-			out[name] = i
+			owned_name := strings.clone(name, allocator)
+			out[owned_name] = i
 		}
 	}
 	return out
+}
+
+// row_mapping_destroy_column_index releases both the map storage and every
+// cloned key. `allocator` must be the allocator used to build the index.
+row_mapping_destroy_column_index :: proc(by_name: map[string]int, allocator := context.temp_allocator) {
+	for key, _ in by_name {
+		delete(key, allocator)
+	}
+	delete(by_name)
 }
 
 row_mapping_lookup_column_index :: proc(by_name: map[string]int, column_name: string) -> (int, bool) {
@@ -313,6 +346,120 @@ row_mapping_assign_struct :: proc(
 	}
 
 	return error_none(), true
+}
+
+// Validate the ownership-sensitive part of a commit before changing any
+// destination field. This makes the default replacement policy atomic too.
+row_mapping_preflight_commit :: proc(
+	dst_ptr: rawptr,
+	struct_info: ^reflect.Type_Info,
+	stmt: Stmt,
+	column_index_by_name: map[string]int,
+	replace_mode: Row_Replace_Mode,
+) -> (Error, bool) {
+	fields := reflect.struct_fields_zipped(struct_info.id)
+	for field in fields {
+		field_info := reflect.type_info_base(field.type)
+		if field_info == nil {
+			continue
+		}
+		field_ptr := rawptr(uintptr(dst_ptr) + field.offset)
+
+		if field.is_using && reflect.is_struct(field_info) {
+			err, ok := row_mapping_preflight_commit(field_ptr, field_info, stmt, column_index_by_name, replace_mode)
+			if !ok {
+				return err, false
+			}
+			continue
+		}
+
+		column_name := row_mapping_field_column_name(field)
+		_, mapped := row_mapping_lookup_column_index(column_index_by_name, column_name)
+		if !mapped || replace_mode == .Delete_Existing {
+			continue
+		}
+
+		non_empty := false
+		#partial switch field_variant in field_info.variant {
+		case reflect.Type_Info_String:
+			if !field_variant.is_cstring {
+				non_empty = len((^string)(field_ptr)^) > 0
+			}
+		case reflect.Type_Info_Slice:
+			elem_info := reflect.type_info_base(field_variant.elem)
+			if elem_info != nil && elem_info.id == typeid_of(u8) {
+				non_empty = len((^[]u8)(field_ptr)^) > 0
+			}
+		}
+
+		if non_empty {
+			err := error_from_stmt(stmt, int(raw.MISUSE))
+			error_with_op(&err, row_mapping_op)
+			error_with_context(&err, row_mapping_field_error_context(
+				"destination already contains data; pass Row_Replace_Mode.Delete_Existing only when it is owned by the supplied allocator",
+				field,
+				-1,
+			))
+			return err, false
+		}
+	}
+
+	return error_none(), true
+}
+
+// Commit only fields that have matching result columns. Newly decoded string
+// and blob allocations move from src to dst; src is a stack value and has no
+// automatic destructor.
+row_mapping_commit_struct :: proc(
+	dst_ptr: rawptr,
+	src_ptr: rawptr,
+	struct_info: ^reflect.Type_Info,
+	column_index_by_name: map[string]int,
+	allocator: runtime.Allocator,
+	replace_mode: Row_Replace_Mode,
+) {
+	fields := reflect.struct_fields_zipped(struct_info.id)
+	for field in fields {
+		field_info := reflect.type_info_base(field.type)
+		if field_info == nil {
+			continue
+		}
+
+		dst_field := rawptr(uintptr(dst_ptr) + field.offset)
+		src_field := rawptr(uintptr(src_ptr) + field.offset)
+		if field.is_using && reflect.is_struct(field_info) {
+			row_mapping_commit_struct(dst_field, src_field, field_info, column_index_by_name, allocator, replace_mode)
+			continue
+		}
+
+		column_name := row_mapping_field_column_name(field)
+		_, mapped := row_mapping_lookup_column_index(column_index_by_name, column_name)
+		if !mapped {
+			continue
+		}
+
+		if replace_mode == .Delete_Existing {
+			#partial switch field_variant in field_info.variant {
+			case reflect.Type_Info_String:
+				if !field_variant.is_cstring {
+					old := (^string)(dst_field)
+					if len(old^) > 0 {
+						delete(old^, allocator)
+					}
+				}
+			case reflect.Type_Info_Slice:
+				elem_info := reflect.type_info_base(field_variant.elem)
+				if elem_info != nil && elem_info.id == typeid_of(u8) {
+					old := (^[]u8)(dst_field)
+					if len(old^) > 0 {
+						delete(old^, allocator)
+					}
+				}
+			}
+		}
+
+		mem.copy_non_overlapping(dst_field, src_field, field_info.size)
+	}
 }
 
 // row_mapping_free_struct_owned walks the fields of `struct_info` rooted at `base_ptr` and frees
@@ -732,4 +879,3 @@ row_mapping_field_error_context :: proc(message: string, field: reflect.Struct_F
 		message,
 	)
 }
-

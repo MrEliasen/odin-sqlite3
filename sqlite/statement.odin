@@ -10,17 +10,27 @@ stmt_prepare :: proc(db: DB, sql: string, flags: int = DEFAULT_PREPARE_FLAGS) ->
 	if db.handle == nil {
 		return Stmt{}, error_from_db(db, int(raw.MISUSE), sql), false
 	}
+	if len(sql) > int(max(i32)) {
+		err := error_from_db(db, int(raw.TOOBIG), sql)
+		error_with_op(&err, "stmt_prepare")
+		error_with_context(&err, "SQL text exceeds SQLite's i32 prepare length")
+		return Stmt{}, err, false
+	}
+	if flags < 0 || u64(flags) > u64(max(u32)) {
+		err := error_from_db(db, int(raw.RANGE), sql)
+		error_with_op(&err, "stmt_prepare")
+		error_with_context(&err, "prepare flags exceed SQLite's u32 range")
+		return Stmt{}, err, false
+	}
 
 	stmt := Stmt{
-		db  = db.handle,
-		sql = sql,
+		db            = db.handle,
+		prepare_flags = u32(flags),
 	}
 
 	c_sql := strings.clone_to_cstring(sql)
 	defer delete(c_sql)
-	sql_len := len(sql) + 1
-
-	rc := raw.prepare_v3(db.handle, c_sql, i32(sql_len), u32(flags), &stmt.handle, nil)
+	rc := raw.prepare_v3(db.handle, c_sql, i32(len(sql)), u32(flags), &stmt.handle, nil)
 	if rc != raw.OK {
 		return Stmt{}, error_from_db(db, int(rc), sql), false
 	}
@@ -28,6 +38,10 @@ stmt_prepare :: proc(db: DB, sql: string, flags: int = DEFAULT_PREPARE_FLAGS) ->
 	if stmt.handle == nil {
 		return Stmt{}, error_from_db(db, int(raw.ERROR), sql), false
 	}
+
+	// Wrapper diagnostics and cache metadata must not borrow caller storage.
+	stmt.sql = strings.clone(sql)
+	stmt.owned_sql = true
 
 	return stmt, error_none(), true
 }
@@ -77,9 +91,10 @@ stmt_clear_bindings :: proc(stmt: ^Stmt) -> (Error, bool) {
 		return error_from_stmt(Stmt{}, int(raw.MISUSE)), false
 	}
 
-	stmt_clear_bound_storage(stmt)
-
 	rc := raw.clear_bindings(stmt.handle)
+	if rc == raw.OK {
+		stmt_clear_bound_storage(stmt)
+	}
 	return result_from_stmt(stmt^, int(rc))
 }
 
@@ -88,10 +103,7 @@ stmt_finalize :: proc(stmt: ^Stmt) -> (Error, bool) {
 		return error_none(), true
 	}
 
-	stmt_clear_bound_storage(stmt)
-
 	rc := raw.finalize(stmt.handle)
-	stmt.handle = nil
 
 	err := error_none()
 	ok := true
@@ -99,6 +111,9 @@ stmt_finalize :: proc(stmt: ^Stmt) -> (Error, bool) {
 		err = error_from_stmt(stmt^, int(rc))
 		ok = false
 	}
+
+	stmt.handle = nil
+	stmt_clear_bound_storage(stmt)
 
 	if stmt.owned_sql {
 		delete(stmt.sql)
@@ -110,7 +125,16 @@ stmt_finalize :: proc(stmt: ^Stmt) -> (Error, bool) {
 
 	stmt.db = nil
 	stmt.sql = ""
+	stmt.prepare_flags = 0
 	return err, ok
+}
+
+// stmt_finalize_cleanup is for secondary/deferred cleanup paths where there
+// is no result channel for a finalize error. It always destroys the owned
+// Error value so diagnostics cannot leak.
+stmt_finalize_cleanup :: proc(stmt: ^Stmt) {
+	err, _ := stmt_finalize(stmt)
+	error_destroy(&err)
 }
 
 // stmt_sql returns the original SQL text the statement was prepared from.

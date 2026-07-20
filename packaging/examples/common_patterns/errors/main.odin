@@ -29,7 +29,7 @@ main :: proc() {
 		fmt.println("open failed:", sqlite.error_string(err))
 		return
 	}
-	defer sqlite.db_close(&db)
+	defer sqlite.db_close_cleanup(&db)
 
 	err, ok = sqlite.db_exec(db, `
 		CREATE TABLE products(

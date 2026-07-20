@@ -35,7 +35,7 @@ main :: proc() {
 		fmt.println("open failed:", sqlite.error_string(err))
 		return
 	}
-	defer sqlite.db_close(&db)
+	defer sqlite.db_close_cleanup(&db)
 
 	err, ok = sqlite.db_exec(db, `
 		CREATE TABLE users(
@@ -71,7 +71,7 @@ main :: proc() {
 		fmt.println("prepare failed:", sqlite.error_string(prep_err))
 		return
 	}
-	defer sqlite.stmt_finalize(&stmt)
+	defer sqlite.stmt_finalize_cleanup(&stmt)
 
 	err, ok = sqlite.stmt_bind_i64(&stmt, 1, 1)
 	if !ok {
@@ -125,7 +125,7 @@ main :: proc() {
 	defer delete(mapped.profile_blob)
 
 	fmt.printf(
-		"struct mapping -> {id=%d display_name=%q blob_len=%d first_blob_byte=%d}\n",
+		"struct mapping -> {{id=%d display_name=%q blob_len=%d first_blob_byte=%d}}\n",
 		mapped.id,
 		mapped.display_name,
 		len(mapped.profile_blob),
@@ -149,17 +149,18 @@ main :: proc() {
 		fmt.println("db_query_all_struct failed:", sqlite.error_string(all_err))
 		return
 	}
-	defer delete(all_rows)
-
-	for &row in all_rows {
-		defer delete(row.display_name)
-		defer delete(row.profile_blob)
+	defer {
+		for &row in all_rows {
+			delete(row.display_name)
+			delete(row.profile_blob)
+		}
+		delete(all_rows)
 	}
 
 	fmt.printf("query_all_struct -> row_count=%d\n", len(all_rows))
 	for row, index in all_rows {
 		fmt.printf(
-			"  row[%d] = {id=%d display_name=%q blob_len=%d first_blob_byte=%d}\n",
+			"  row[%d] = {{id=%d display_name=%q blob_len=%d first_blob_byte=%d}}\n",
 			index,
 			row.id,
 			row.display_name,

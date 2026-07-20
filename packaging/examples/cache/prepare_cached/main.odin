@@ -58,7 +58,7 @@ main :: proc() {
 		fmt.println("open failed:", sqlite.error_string(err))
 		return
 	}
-	defer sqlite.db_close(&db)
+	defer sqlite.db_close_cleanup(&db)
 
 	err, ok = sqlite.db_exec(db, `
 		CREATE TABLE users(
@@ -83,7 +83,7 @@ main :: proc() {
 	}
 
 	cache := sqlite.cache_init()
-	defer sqlite.cache_destroy(&cache)
+	defer sqlite.cache_destroy_cleanup(&cache)
 
 	fmt.println("prepare-once, reuse-many with db_prepare_cached:")
 

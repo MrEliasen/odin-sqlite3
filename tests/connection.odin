@@ -137,3 +137,14 @@ test_connection_interrupt_flag_roundtrip :: proc() {
 
 	expect_true(sqlite.db_is_interrupted(test_db.db), "interrupt flag should be visible after db_interrupt")
 }
+
+test_connection_rejects_narrowing_wraps :: proc() {
+	bad_db, open_err, open_ok := sqlite.db_open(":memory:", int(max(i32)) + 1)
+	_ = bad_db
+	expect_error(&open_err, open_ok, int(raw.RANGE), "open flags outside i32 must not wrap")
+
+	test_db := test_db_open("connection_rejects_narrowing_wraps")
+	defer test_db_close(&test_db)
+	timeout_err, timeout_ok := sqlite.db_set_busy_timeout(test_db.db, int(max(i32)) + 1)
+	expect_error(&timeout_err, timeout_ok, int(raw.RANGE), "busy timeout outside i32 must not wrap")
+}

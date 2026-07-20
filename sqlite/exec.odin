@@ -51,11 +51,11 @@ db_query_one :: proc(db: DB, sql: string, flags: int = DEFAULT_PREPARE_FLAGS) ->
 
 	has_row, step_err, step_ok := stmt_next(stmt)
 	if !step_ok {
-		_, _ = stmt_finalize(&stmt)
+		stmt_finalize_cleanup(&stmt)
 		return Stmt{}, step_err, false
 	}
 	if !has_row {
-		_, _ = stmt_finalize(&stmt)
+		stmt_finalize_cleanup(&stmt)
 		return Stmt{}, error_from_db(db, int(raw.DONE), sql), false
 	}
 
@@ -70,11 +70,11 @@ db_query_optional :: proc(db: DB, sql: string, flags: int = DEFAULT_PREPARE_FLAG
 
 	has_row, step_err, step_ok := stmt_next(stmt)
 	if !step_ok {
-		_, _ = stmt_finalize(&stmt)
+		stmt_finalize_cleanup(&stmt)
 		return Stmt{}, false, step_err, false
 	}
 	if !has_row {
-		_, _ = stmt_finalize(&stmt)
+		stmt_finalize_cleanup(&stmt)
 		return Stmt{}, false, error_none(), true
 	}
 
@@ -90,7 +90,7 @@ db_scalar_i64 :: proc(db: DB, sql: string, flags: int = DEFAULT_PREPARE_FLAGS) -
 	if !ok {
 		return 0, err, false
 	}
-	defer stmt_finalize(&stmt)
+	defer stmt_finalize_cleanup(&stmt)
 
 	if stmt_is_null(stmt, 0) {
 		return 0, error_none(), true
@@ -104,7 +104,7 @@ db_scalar_f64 :: proc(db: DB, sql: string, flags: int = DEFAULT_PREPARE_FLAGS) -
 	if !ok {
 		return 0, err, false
 	}
-	defer stmt_finalize(&stmt)
+	defer stmt_finalize_cleanup(&stmt)
 
 	if stmt_is_null(stmt, 0) {
 		return 0, error_none(), true
@@ -128,7 +128,7 @@ db_scalar_text :: proc(db: DB, sql: string, flags: int = DEFAULT_PREPARE_FLAGS, 
 	if !ok {
 		return "", err, false
 	}
-	defer stmt_finalize(&stmt)
+	defer stmt_finalize_cleanup(&stmt)
 
 	if stmt_is_null(stmt, 0) {
 		return "", error_none(), true
@@ -145,7 +145,7 @@ db_exists :: proc(db: DB, sql: string, flags: int = DEFAULT_PREPARE_FLAGS) -> (b
 	if !found {
 		return false, error_none(), true
 	}
-	defer stmt_finalize(&stmt)
+	defer stmt_finalize_cleanup(&stmt)
 
 	if stmt_column_count(stmt) == 0 {
 		return true, error_none(), true
@@ -180,7 +180,7 @@ db_with_stmt :: proc(
 	if !ok {
 		return err, false
 	}
-	defer stmt_finalize(&stmt)
+	defer stmt_finalize_cleanup(&stmt)
 
 	return body(&stmt)
 }

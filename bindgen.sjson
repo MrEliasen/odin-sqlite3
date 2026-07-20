@@ -42,3 +42,26 @@ procedure_type_overrides = {
 clang_include_paths = [
     "input"
 ]
+
+// Generate SQLite's opt-in declarations so the raw package has a complete
+// source-level surface.  The generated Odin declarations are post-processed
+// behind matching #config availability gates; defining these here controls
+// header visibility only and does not claim that every linked SQLite library
+// exports every optional symbol.
+clang_defines = {
+    "SQLITE_ENABLE_NORMALIZE"        = "1"
+    "SQLITE_ENABLE_PREUPDATE_HOOK"   = "1"
+    "SQLITE_ENABLE_SESSION"          = "1"
+    "SQLITE_ENABLE_COLUMN_METADATA"  = "1"
+    "SQLITE_ENABLE_UNLOCK_NOTIFY"    = "1"
+    "SQLITE_ENABLE_STMT_SCANSTATUS"  = "1"
+    "SQLITE_ENABLE_SNAPSHOT"         = "1"
+}
+
+// sqlite3_activate_cerod belongs to the proprietary CEROD/SEE extension.  It
+// appears in upstream public headers but is not exported by ordinary SQLite
+// builds (including the Homebrew library used by this package).
+remove = [
+    "sqlite3_activate_cerod"
+    "__SQLITESESSION_H_"
+]

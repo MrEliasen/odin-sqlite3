@@ -13,7 +13,7 @@ print_user :: proc(db: sqlite.DB, id: i64, label: string) {
 		fmt.println("prepare select failed:", sqlite.error_string(err))
 		return
 	}
-	defer sqlite.stmt_finalize(&stmt)
+	defer sqlite.stmt_finalize_cleanup(&stmt)
 
 	err, ok = sqlite.stmt_bind_i64(&stmt, 1, id)
 	if !ok {
@@ -66,7 +66,7 @@ main :: proc() {
 		fmt.println("open failed:", sqlite.error_string(err))
 		return
 	}
-	defer sqlite.db_close(&db)
+	defer sqlite.db_close_cleanup(&db)
 
 	err, ok = sqlite.db_exec(db, `
 		CREATE TABLE users(
@@ -101,7 +101,7 @@ main :: proc() {
 		fmt.println("prepare update failed:", sqlite.error_string(prep_err))
 		return
 	}
-	defer sqlite.stmt_finalize(&stmt)
+	defer sqlite.stmt_finalize_cleanup(&stmt)
 
 	err, ok = sqlite.stmt_bind_text(&stmt, 1, "Alice Cooper")
 	if !ok {
@@ -149,7 +149,7 @@ main :: proc() {
 		fmt.println("prepare missing-row update failed:", sqlite.error_string(missing_prep_err))
 		return
 	}
-	defer sqlite.stmt_finalize(&missing_stmt)
+	defer sqlite.stmt_finalize_cleanup(&missing_stmt)
 
 	err, ok = sqlite.stmt_bind_bool(&missing_stmt, 1, true)
 	if !ok {

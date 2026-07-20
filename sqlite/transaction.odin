@@ -117,7 +117,8 @@ db_with_transaction :: proc(db: DB, body: proc(db: DB) -> (Error, bool)) -> (Err
 
 	commit_err, commit_ok := db_commit(db)
 	if !commit_ok {
-		_, _ = db_rollback(db) // defensive — ignore secondary errors
+		rollback_err, _ := db_rollback(db) // defensive secondary cleanup
+		error_destroy(&rollback_err)
 		return commit_err, false
 	}
 	return commit_err, true
@@ -133,8 +134,20 @@ db_with_savepoint :: proc(db: DB, name: string, body: proc(db: DB) -> (Error, bo
 	if !body_ok {
 		rollback_err, rollback_ok := db_rollback_to(db, name)
 		if !rollback_ok {
+			// Best effort: RELEASE may still clear a surviving savepoint. Keep
+			// the rollback error as the most actionable cleanup failure.
+			release_err, _ := db_release(db, name)
+			error_destroy(&release_err)
 			error_destroy(&body_err)
 			return rollback_err, false
+		}
+
+		// ROLLBACK TO does not remove the savepoint. RELEASE is required to
+		// close it (and, for a top-level savepoint, restore autocommit).
+		release_err, release_ok := db_release(db, name)
+		if !release_ok {
+			error_destroy(&body_err)
+			return release_err, false
 		}
 		return body_err, false
 	}

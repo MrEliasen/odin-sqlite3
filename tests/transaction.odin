@@ -465,3 +465,44 @@ test_operational_stmt_consume_done_and_with_stmt :: proc() {
 	expect_no_error(step_err, step_ok, "stmt_step_all should succeed on helper_stmt query")
 	expect_eq(rows_seen, 3, "stmt_step_all should visit all helper_stmt rows")
 }
+
+test_failed_top_level_savepoint_restores_autocommit :: proc() {
+	test_db := test_db_open("failed_top_level_savepoint_restores_autocommit")
+	defer test_db_close(&test_db)
+
+	err, ok := sqlite.db_with_savepoint(test_db.db, "top_level", proc(db: sqlite.DB) -> (sqlite.Error, bool) {
+		_ = db
+		return sqlite.error_make(int(raw.ABORT), "forced failure"), false
+	})
+	defer sqlite.error_destroy(&err)
+	expect_false(ok, "forced savepoint body failure should propagate")
+	expect_false(sqlite.db_in_transaction(test_db.db), "ROLLBACK TO must be followed by RELEASE so a top-level savepoint ends")
+}
+
+test_cache_is_connection_and_prepare_flags_safe :: proc() {
+	db1 := test_db_open("cache_connection_flags_db1")
+	defer test_db_close(&db1)
+	db2 := test_db_open("cache_connection_flags_db2")
+	defer test_db_close(&db2)
+
+	cache := sqlite.cache_init()
+	stmt1, err, ok := sqlite.db_prepare_cached(db1.db, &cache, "SELECT 111")
+	expect_no_error(err, ok, "first cached prepare should succeed")
+	expect_true(stmt1 != nil, "first cached statement should be present")
+
+	wrong_db_stmt, wrong_db_err, wrong_db_ok := sqlite.db_prepare_cached(db2.db, &cache, "SELECT 222")
+	_ = wrong_db_stmt
+	defer sqlite.error_destroy(&wrong_db_err)
+	expect_false(wrong_db_ok, "a populated cache must reject a different database handle")
+	expect_eq(wrong_db_err.code, int(raw.MISUSE), "cross-database cache use should report misuse")
+
+	no_vtab_flags := sqlite.PERSISTENT_PREPARE_FLAGS | int(raw.PREPARE_NO_VTAB)
+	stmt2, flags_err, flags_ok := sqlite.db_prepare_cached(db1.db, &cache, "SELECT 111", no_vtab_flags)
+	expect_no_error(flags_err, flags_ok, "same SQL with different prepare flags should get a distinct cache entry")
+	expect_true(stmt2 != nil, "flag-specific cached statement should be present")
+	expect_true(stmt1.handle != stmt2.handle, "cache hits must not bypass requested prepare flags")
+	expect_eq(sqlite.cache_count(cache), 2, "SQL+flags cache identity should retain both variants")
+
+	destroy_err, destroy_ok := sqlite.cache_destroy(&cache)
+	expect_no_error(destroy_err, destroy_ok, "cache cleanup should succeed before closing either DB")
+}

@@ -93,6 +93,23 @@ test_sql_not_null_constraint_violation :: proc() {
 	expect_string_contains(err.message, "NOT NULL", "message should mention NOT NULL")
 }
 
+test_query_helper_destroys_secondary_finalize_error :: proc() {
+	test_db := test_db_open("query_helper_destroys_secondary_finalize_error")
+	defer test_db_close(&test_db)
+
+	exec_ok(test_db.db, "CREATE TABLE finalize_guard(v INTEGER NOT NULL UNIQUE)")
+	exec_ok(test_db.db, "INSERT INTO finalize_guard(v) VALUES (1)")
+
+	// stmt_next reports the constraint and sqlite3_finalize repeats it. The
+	// helper returns the primary step Error and must destroy the secondary
+	// finalize Error; the suite's tracking allocator enforces zero leaks.
+	stmt, err, ok := sqlite.db_query_one(test_db.db, "INSERT INTO finalize_guard(v) VALUES (1)")
+	_ = stmt
+	defer sqlite.error_destroy(&err)
+	expect_false(ok, "constraint in db_query_one should fail")
+	expect_eq(err.code, int(raw.CONSTRAINT), "primary constraint error should be preserved")
+}
+
 test_sql_check_constraint_violation :: proc() {
 	test_db := test_db_open("sql_check_constraint_violation")
 	defer test_db_close(&test_db)
@@ -701,6 +718,7 @@ run_sql_behavior_tests :: proc() {
 	run_test("sql_delete_with_prepared_params", test_sql_delete_with_prepared_params)
 	run_test("sql_unique_constraint_violation", test_sql_unique_constraint_violation)
 	run_test("sql_not_null_constraint_violation", test_sql_not_null_constraint_violation)
+	run_test("query_helper_destroys_secondary_finalize_error", test_query_helper_destroys_secondary_finalize_error)
 	run_test("sql_check_constraint_violation", test_sql_check_constraint_violation)
 	run_test("sql_primary_key_conflict", test_sql_primary_key_conflict)
 	run_test("sql_foreign_key_constraint", test_sql_foreign_key_constraint)

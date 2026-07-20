@@ -20,7 +20,7 @@ print_user_by_id :: proc(db: sqlite.DB, user_id: i64) {
 		fmt.println("prepare failed:", sqlite.error_string(err))
 		return
 	}
-	defer sqlite.stmt_finalize(&stmt)
+	defer sqlite.stmt_finalize_cleanup(&stmt)
 
 	err, ok = sqlite.stmt_bind_i64(&stmt, 1, user_id)
 	if !ok {
@@ -47,7 +47,7 @@ print_user_by_id :: proc(db: sqlite.DB, user_id: i64) {
 	defer delete(row.display_name)
 
 	fmt.printf(
-		"id=%d -> mapped row: {id=%d display_name=%q is_admin=%v score=%.2f}\n",
+		"id=%d -> mapped row: {{id=%d display_name=%q is_admin=%v score=%.2f}}\n",
 		user_id,
 		row.id,
 		row.display_name,
@@ -91,7 +91,7 @@ main :: proc() {
 		fmt.println("open failed:", sqlite.error_string(err))
 		return
 	}
-	defer sqlite.db_close(&db)
+	defer sqlite.db_close_cleanup(&db)
 
 	err, ok = sqlite.db_exec(db, `
 		CREATE TABLE users(

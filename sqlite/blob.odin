@@ -102,6 +102,12 @@ blob_close :: proc(blob: ^Blob) -> (Error, bool) {
 	}
 
 	rc := raw.blob_close(blob.handle)
+	close_err := error_none()
+	close_ok := true
+	if rc != raw.OK {
+		close_err, close_ok = blob_result_from_blob(blob^, int(rc))
+		error_with_op(&close_err, "blob_close")
+	}
 
 	delete(blob.schema_name)
 	delete(blob.table_name)
@@ -115,13 +121,12 @@ blob_close :: proc(blob: ^Blob) -> (Error, bool) {
 	blob.rowid = 0
 	blob.writeable = false
 
-	if rc != raw.OK {
-		err := error_from_db(DB{}, int(rc))
-		error_with_op(&err, "blob_close")
-		return err, false
-	}
+	return close_err, close_ok
+}
 
-	return error_none(), true
+blob_close_cleanup :: proc(blob: ^Blob) {
+	err, _ := blob_close(blob)
+	error_destroy(&err)
 }
 
 blob_bytes :: proc(blob: Blob) -> int {

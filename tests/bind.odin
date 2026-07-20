@@ -246,12 +246,65 @@ test_bind_empty_blob_parameter_roundtrip :: proc() {
 
 	step_expect_row(stmt, sql)
 
-	expect_eq(sqlite.stmt_column_type(stmt, 0), int(raw.NULL), "empty blob currently binds as NULL under observed SQLite runtime behavior")
+	expect_eq(sqlite.stmt_column_type(stmt, 0), int(raw.BLOB), "empty blob must remain distinct from SQL NULL")
 
 	got := sqlite.stmt_get_blob(stmt, 0, context.temp_allocator)
-	expect_true(got == nil, "empty blob currently reads back as nil when SQLite reports NULL")
+	expect_eq(len(got), 0, "empty blob should read back with zero length")
 	expect_eq(sqlite.stmt_get_blob_bytes(stmt, 0), 0, "empty blob byte count should be zero")
-	expect_true(sqlite.stmt_is_null(stmt, 0), "empty blob binding should currently be treated as NULL by the runtime")
+	expect_false(sqlite.stmt_is_null(stmt, 0), "empty blob binding must not be treated as NULL")
+}
+
+test_bind_failed_busy_rebind_preserves_original_storage :: proc() {
+	test_db := test_db_open("bind_failed_busy_rebind_preserves_original_storage")
+	defer test_db_close(&test_db)
+
+	sql := "SELECT ?1"
+	stmt := prepare_ok(test_db.db, sql)
+	defer finalize_ok(&stmt, sql)
+
+	bind_text_ok(&stmt, 1, "original", sql)
+	step_expect_row(stmt, sql)
+
+	rebind_err, rebind_ok := sqlite.stmt_bind_text(&stmt, 1, "replacement")
+	defer sqlite.error_destroy(&rebind_err)
+	expect_false(rebind_ok, "rebinding a busy statement should fail")
+	expect_eq(rebind_err.code, int(raw.MISUSE), "busy rebind should report SQLITE_MISUSE")
+
+	reset_ok(&stmt, sql)
+	step_expect_row(stmt, sql)
+	expect_eq(sqlite.stmt_get_text(stmt, 0, context.temp_allocator), "original", "failed rebind must preserve the prior SQLITE_STATIC value")
+}
+
+test_bind_successful_type_rebind_releases_obsolete_storage :: proc() {
+	test_db := test_db_open("bind_successful_type_rebind_releases_obsolete_storage")
+	defer test_db_close(&test_db)
+
+	stmt := prepare_ok(test_db.db, "SELECT ?1")
+	defer finalize_ok(&stmt)
+	bind_text_ok(&stmt, 1, "owned backing")
+	expect_eq(len(stmt.bound_text_storage), 1, "text bind should retain one backing allocation")
+
+	bind_i64_ok(&stmt, 1, 42)
+	expect_eq(len(stmt.bound_text_storage), 0, "successful scalar rebind should release obsolete text backing")
+	expect_eq(len(stmt.bound_blob_storage), 0, "successful scalar rebind should leave no blob backing")
+}
+
+test_bind_huge_index_and_nil_named_helpers_are_safe :: proc() {
+	test_db := test_db_open("bind_huge_index_and_nil_named_helpers_are_safe")
+	defer test_db_close(&test_db)
+
+	stmt := prepare_ok(test_db.db, "SELECT ?1")
+	defer finalize_ok(&stmt)
+
+	huge := int(max(i32)) + 1
+	err, ok := sqlite.stmt_bind_i64(&stmt, huge, 7)
+	expect_error(&err, ok, int(raw.RANGE), "huge bind indexes must not wrap to a valid parameter")
+
+	err, ok = sqlite.stmt_bind_zeroblob(&stmt, 1, -1)
+	expect_error(&err, ok, int(raw.RANGE), "negative zeroblob sizes must not wrap to a huge allocation")
+
+	err, ok = sqlite.stmt_bind_named_i64(nil, ":missing", 7)
+	expect_error(&err, ok, int(raw.MISUSE), "named bind helpers must reject nil statements without dereferencing them")
 }
 
 test_bind_zeroblob_parameter_roundtrip :: proc() {

@@ -69,12 +69,25 @@ test_tracing_and_debug_helpers :: proc() {
 	expect_true(sqlite.db_trace_enabled(test_db.db), "tracing should report enabled after registration")
 
 	got_config := sqlite.db_trace_config(test_db.db)
+	defer sqlite.trace_config_destroy(&got_config)
 	expect_true(got_config.log_expanded_sql, "trace config should preserve expanded-sql option")
 	expect_true(got_config.include_row_events, "trace config should preserve row event option")
 	expect_true(got_config.include_close_event, "trace config should preserve close event option")
 	expect_eq(len(got_config.events), 2, "trace config should preserve explicit event list")
 	expect_eq(got_config.events[0], sqlite.Trace_Event.Statement, "trace config event order should be preserved")
 	expect_eq(got_config.events[1], sqlite.Trace_Event.Profile, "trace config event order should be preserved")
+
+	got_config.events[0] = .Row
+	fresh_config := sqlite.db_trace_config(test_db.db)
+	defer sqlite.trace_config_destroy(&fresh_config)
+	expect_eq(fresh_config.events[0], sqlite.Trace_Event.Statement, "trace config getter must return a deep copy, not an alias")
+	got_config.events[0] = .Statement
+	err, ok = sqlite.db_trace_enable(&test_db.db, got_config)
+	expect_no_error(err, ok, "re-enabling tracing from a returned config snapshot should preserve events")
+	roundtrip_config := sqlite.db_trace_config(test_db.db)
+	defer sqlite.trace_config_destroy(&roundtrip_config)
+	expect_eq(roundtrip_config.events[0], sqlite.Trace_Event.Statement, "trace config round-trip should preserve first event")
+	expect_eq(roundtrip_config.events[1], sqlite.Trace_Event.Profile, "trace config round-trip should preserve second event")
 
 	stmt := prepare_ok(test_db.db, "SELECT ?1")
 	defer finalize_ok(&stmt, "SELECT ?1")
@@ -189,6 +202,9 @@ test_backup_api :: proc() {
 	progress_before := sqlite.backup_progress(backup)
 	expect_true(progress_before.remaining_pages >= 0, "backup_progress remaining pages should be non-negative")
 	expect_true(progress_before.total_pages >= 0, "backup_progress total pages should be non-negative")
+
+	_, range_err, range_ok := sqlite.backup_step(backup, int(max(i32)) + 1)
+	expect_error(&range_err, range_ok, int(raw.RANGE), "backup page count outside i32 must not wrap")
 
 	for {
 		step_result, step_err, step_ok := sqlite.backup_step(backup, 1)

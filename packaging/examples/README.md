@@ -178,9 +178,12 @@ That path gives you a good overview of:
 
 ### Import path
 
-In this repository, the examples use relative imports so they can be compiled and checked in-place.
+In this repository, the examples use relative imports so they can be compiled
+and checked in place. `make package` adjusts those relative paths in the copied
+examples so they also work directly inside the unpacked release directory.
 
-When consumed from a packaged release, you will usually import the package like this:
+After copying `sqlite/` into your own project's `vendor/` directory, use the
+collection import instead:
 
 ```text
 import sqlite "vendor:sqlite"

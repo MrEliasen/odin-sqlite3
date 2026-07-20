@@ -100,6 +100,12 @@ backup_step :: proc(backup: Backup, page_count: int) -> (Backup_Step_Result, Err
 		error_with_op(&err, "backup_step")
 		return .Invalid, err, false
 	}
+	if page_count < int(min(i32)) || page_count > int(max(i32)) {
+		err := error_from_db(DB{handle = backup.dst_db}, int(raw.RANGE))
+		error_with_op(&err, "backup_step")
+		error_with_context(&err, "page count exceeds SQLite's i32 range")
+		return .Invalid, err, false
+	}
 
 	rc := raw.backup_step(backup.handle, i32(page_count))
 	switch rc {
@@ -127,9 +133,17 @@ backup_finish :: proc(backup: ^Backup) -> (Error, bool) {
 	}
 
 	handle := backup.handle
-	backup.handle = nil
-
 	rc := raw.backup_finish(handle)
+
+	// Capture destination diagnostics and schema context before clearing the
+	// wrapper fields. sqlite3_backup_finish leaves the DB handles valid.
+	finish_err := error_none()
+	finish_ok := true
+	if rc != raw.OK {
+		finish_err, finish_ok = backup_result_from_backup(backup^, int(rc), "backup_finish")
+	}
+
+	backup.handle = nil
 
 	if backup.owned_src_schema && backup.src_schema_name != "" {
 		delete(backup.src_schema_name)
@@ -145,13 +159,12 @@ backup_finish :: proc(backup: ^Backup) -> (Error, bool) {
 	backup.src_db = nil
 	backup.dst_db = nil
 
-	if rc != raw.OK {
-		err := error_from_db(DB{}, int(rc))
-		error_with_op(&err, "backup_finish")
-		return err, false
-	}
+	return finish_err, finish_ok
+}
 
-	return error_none(), true
+backup_finish_cleanup :: proc(backup: ^Backup) {
+	err, _ := backup_finish(backup)
+	error_destroy(&err)
 }
 
 backup_step_all :: proc(

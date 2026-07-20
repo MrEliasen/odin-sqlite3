@@ -14,10 +14,8 @@ The design goal is not to build an ORM. The wrapper stays close to SQLite's actu
 
 I normally hand roll my code, and I started down the path with sqlite3 bindings as well, but I thought why not actually give the LLMs a proper shot at something where I can very strictly define the scope.
 
-This is the result, a probably 90% LLM generate SQLite3 bindings for Odin. It does not cover everything, but it should pretty much cover more than what most people use.
+This is the result, a probably ~90~95% LLM generate SQLite3 bindings for Odin. It does not cover everything, but it should pretty much cover more than what most people use.
 I did have to sort out a fair few memory issues manually, but other than that, the LLM's did the rest. The markdown files which summarise what is done, the spec etc is in the `llm-docs` branch.
-
-I feel dirty, but.. it also saved me stupid amounts of time. 
 
 ## What you get
 

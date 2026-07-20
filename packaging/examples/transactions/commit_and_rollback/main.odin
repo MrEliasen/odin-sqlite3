@@ -13,7 +13,7 @@ print_balance :: proc(db: sqlite.DB, label: string, account_id: i64) {
 		fmt.println("prepare balance query failed:", sqlite.error_string(err))
 		return
 	}
-	defer sqlite.stmt_finalize(&stmt)
+	defer sqlite.stmt_finalize_cleanup(&stmt)
 
 	err, ok = sqlite.stmt_bind_i64(&stmt, 1, account_id)
 	if !ok {
@@ -68,7 +68,7 @@ main :: proc() {
 		fmt.println("open failed:", sqlite.error_string(err))
 		return
 	}
-	defer sqlite.db_close(&db)
+	defer sqlite.db_close_cleanup(&db)
 
 	err, ok = sqlite.db_exec(db, `
 		CREATE TABLE accounts(

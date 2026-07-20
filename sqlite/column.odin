@@ -3,7 +3,7 @@ package sqlite
 import raw "raw/generated"
 
 column_index_valid :: proc(index: int) -> bool {
-	return index >= 0
+	return index >= 0 && index <= int(max(i32))
 }
 
 stmt_column_count :: proc(stmt: Stmt) -> int {

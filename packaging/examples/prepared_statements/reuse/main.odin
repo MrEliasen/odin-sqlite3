@@ -29,7 +29,7 @@ main :: proc() {
 		fmt.println("open failed:", sqlite.error_string(err))
 		return
 	}
-	defer sqlite.db_close(&db)
+	defer sqlite.db_close_cleanup(&db)
 
 	err, ok = sqlite.db_exec(db, `
 		CREATE TABLE users(
@@ -61,7 +61,7 @@ main :: proc() {
 		fmt.println("prepare failed:", sqlite.error_string(prep_err))
 		return
 	}
-	defer sqlite.stmt_finalize(&stmt)
+	defer sqlite.stmt_finalize_cleanup(&stmt)
 
 	fmt.println("prepared statement reuse example:")
 

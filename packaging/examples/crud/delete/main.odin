@@ -13,7 +13,7 @@ user_exists :: proc(db: sqlite.DB, id: i64) -> bool {
 		fmt.println("prepare exists query failed:", sqlite.error_string(err))
 		return false
 	}
-	defer sqlite.stmt_finalize(&stmt)
+	defer sqlite.stmt_finalize_cleanup(&stmt)
 
 	err, ok = sqlite.stmt_bind_i64(&stmt, 1, id)
 	if !ok {
@@ -55,7 +55,7 @@ main :: proc() {
 		fmt.println("open failed:", sqlite.error_string(err))
 		return
 	}
-	defer sqlite.db_close(&db)
+	defer sqlite.db_close_cleanup(&db)
 
 	err, ok = sqlite.db_exec(db, `
 		CREATE TABLE users(
@@ -91,7 +91,7 @@ main :: proc() {
 		fmt.println("prepare delete failed:", sqlite.error_string(prep_err))
 		return
 	}
-	defer sqlite.stmt_finalize(&stmt)
+	defer sqlite.stmt_finalize_cleanup(&stmt)
 
 	err, ok = sqlite.stmt_bind_i64(&stmt, 1, 1)
 	if !ok {

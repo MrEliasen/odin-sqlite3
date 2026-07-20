@@ -58,7 +58,7 @@ error_is_none :: proc(err: Error) -> bool {
 // `Error{message = "..."}` literals so the returned Error is safe to release
 // with `error_destroy`.
 error_make :: proc(code: int, message: string = "") -> Error {
-	err := Error{code = code, extended_code = code}
+	err := Error{code = error_primary_code(code), extended_code = code}
 	if message != "" {
 		err.message = strings.clone(message)
 	}

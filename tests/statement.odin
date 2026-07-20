@@ -1,5 +1,6 @@
 package tests
 
+import "core:strings"
 import raw "../sqlite/raw/generated"
 import sqlite "../sqlite"
 
@@ -267,4 +268,28 @@ test_statement_invalid_sql_returns_error :: proc() {
 	expect_false(sqlite.error_ok(err), "invalid SQL should return wrapper error")
 	expect_eq(err.code, int(raw.ERROR), "invalid SQL prepare should return SQLITE_ERROR")
 	expect_false(sqlite.stmt_is_valid(stmt), "failed prepare should not return valid statement")
+}
+
+test_statement_owns_sql_and_rejects_narrowing_wraps :: proc() {
+	test_db := test_db_open("statement_owns_sql_and_rejects_narrowing_wraps")
+	defer test_db_close(&test_db)
+
+	dynamic_sql := strings.clone("SELECT 123 AS value")
+	stmt, err, ok := sqlite.stmt_prepare(test_db.db, dynamic_sql)
+	expect_no_error(err, ok, "preparing dynamic SQL should succeed")
+	delete(dynamic_sql)
+	defer finalize_ok(&stmt)
+
+	expect_eq(stmt.sql, "SELECT 123 AS value", "statement diagnostic SQL must outlive caller storage")
+	step_expect_row(stmt)
+	expect_eq(sqlite.stmt_get_i64(stmt, 0), i64(123), "owned-SQL statement should execute normally")
+
+	huge_column := int(max(i32)) + 1
+	expect_eq(sqlite.stmt_get_i64(stmt, huge_column), i64(0), "huge column index must not wrap to column zero")
+	expect_eq(sqlite.stmt_column_name(stmt, huge_column), "", "huge column metadata index must be rejected")
+	expect_true(sqlite.stmt_is_null(stmt, huge_column), "huge column type lookup should return the safe NULL default")
+
+	bad_stmt, flags_err, flags_ok := sqlite.stmt_prepare(test_db.db, "SELECT 1", int(max(u32)) + 1)
+	_ = bad_stmt
+	expect_error(&flags_err, flags_ok, int(raw.RANGE), "prepare flags outside u32 must not wrap")
 }

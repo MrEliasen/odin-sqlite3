@@ -1,11 +1,13 @@
 package sqlite
 
+import "base:runtime"
 import raw "raw/generated"
 
 DB :: struct {
 	handle:        ^raw.Sqlite3,
 	trace_enabled: bool,
 	trace_config:  Trace_Config,
+	trace_allocator: runtime.Allocator,
 }
 
 Stmt :: struct {
@@ -13,6 +15,7 @@ Stmt :: struct {
 	db:                 ^raw.Sqlite3,
 	sql:                string,
 	owned_sql:          bool,
+	prepare_flags:      u32,
 	// bound_text_storage / bound_blob_storage hold per-parameter-slot copies of
 	// caller text/blob values. They are passed to sqlite3_bind_text /
 	// sqlite3_bind_blob with SQLITE_STATIC, so SQLite reads from these slices
@@ -62,8 +65,28 @@ Cache_Entry :: struct {
 	used: bool,
 }
 
+Stmt_Cache_Key :: struct {
+	sql:   string,
+	flags: u32,
+}
+
 Stmt_Cache :: struct {
-	entries: map[string]^Cache_Entry,
+	// A cache is bound to the first connection inserted into it while it has
+	// entries. This prevents a statement prepared by one sqlite3 handle from
+	// being returned for another handle.
+	db:      ^raw.Sqlite3,
+	entries: map[Stmt_Cache_Key]^Cache_Entry,
+}
+
+// Row_Replace_Mode controls what stmt_scan_struct does when a mapped string
+// or []u8 destination field is already non-empty.
+Row_Replace_Mode :: enum {
+	// Safest default: reject the scan and leave the entire destination
+	// unchanged because the wrapper cannot infer who owns the old memory.
+	Reject_Non_Empty,
+	// The existing mapped string/blob is owned by the supplied allocator. It
+	// is deleted only after the complete row has been decoded successfully.
+	Delete_Existing,
 }
 
 Error :: struct {

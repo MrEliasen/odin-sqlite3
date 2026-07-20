@@ -26,8 +26,10 @@ help:
 	@echo "  download-sqlite     Download sqlite3.h into input/"
 	@echo "  generate            Generate raw bindings into sqlite/raw/generated"
 	@echo "  postgen-patch       Apply deterministic post-generation patches to raw bindings"
+	@echo "  verify-raw-abi      Compare generated Odin layouts with both C headers"
 	@echo "  regenerate          Regenerate raw bindings and apply post-generation patches"
-	@echo "  package-dir         Create release-friendly package directory in out/"
+	@echo "  package             Create release-friendly package directory in out/"
+	@echo "  package-dir         Create package directory (legacy alias)"
 	@echo "  package-zip         Zip the release package"
 	@echo "  clean-generated     Remove generated raw bindings"
 	@echo "  clean-out           Remove out/"
@@ -148,8 +150,16 @@ postgen-patch:
 	@set -eu; \
 	python3 packaging/apply_postgen_patches.py
 
+.PHONY: verify-raw-abi
+verify-raw-abi:
+	@set -eu; \
+	python3 packaging/apply_postgen_patches.py --verify-abi
+
 .PHONY: regenerate
 regenerate: generate postgen-patch
+
+.PHONY: package
+package: package-dir
 
 .PHONY: package-dir
 package-dir:
@@ -157,7 +167,15 @@ package-dir:
 	rm -rf "$(PACKAGE_DIR)"; \
 	mkdir -p "$(PACKAGE_DIR)"; \
 	cp -R sqlite "$(PACKAGE_DIR)/sqlite"; \
-	if [ -f LICENSE ]; then cp LICENSE "$(PACKAGE_DIR)/"; fi; \
+	cp LICENSE README.md packaging/README.package.md "$(PACKAGE_DIR)/"; \
+	cp -R packaging/examples "$(PACKAGE_DIR)/examples"; \
+	find "$(PACKAGE_DIR)/examples" -name main.odin | while IFS= read -r file; do \
+		sed \
+			-e 's|import sqlite "../../../sqlite"|import sqlite "../../sqlite"|' \
+			-e 's|import sqlite "../../../../sqlite"|import sqlite "../../../sqlite"|' \
+			"$$file" > "$$file.tmp"; \
+		mv "$$file.tmp" "$$file"; \
+	done; \
 	echo "Wrote $(PACKAGE_DIR)"
 
 .PHONY: package-zip
@@ -182,13 +200,14 @@ clean-deps:
 .PHONY: clean
 clean: clean-generated clean-out clean-deps
 
-.PHONY: test 
+.PHONY: test
 test:
-	odin check sqlite/package.odin -file; \
+	@set -eu; \
+	odin check sqlite -no-entry-point; \
 	odin check tests; \
 	find packaging/examples -name main.odin -exec dirname {} \; | sort | while read d; do odin check "$$d" || exit 1; done; \
 	odin run tests; \
-	find packaging/examples -name main.odin -exec dirname {} \; | sort | while read d; do echo "Running example $$d"; odin run "$$d" || exit 1; done;
+	find packaging/examples -name main.odin -exec dirname {} \; | sort | while read d; do echo "Running example $$d"; odin run "$$d" || exit 1; done
 
 .PHONY: publish
 publish:

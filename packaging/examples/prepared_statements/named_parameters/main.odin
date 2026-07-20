@@ -29,7 +29,7 @@ main :: proc() {
 		fmt.println("open failed:", sqlite.error_string(err))
 		return
 	}
-	defer sqlite.db_close(&db)
+	defer sqlite.db_close_cleanup(&db)
 
 	err, ok = sqlite.db_exec(db, `
 		CREATE TABLE players(
@@ -69,7 +69,7 @@ main :: proc() {
 		fmt.println("prepare insert failed:", sqlite.error_string(insert_err))
 		return
 	}
-	defer sqlite.stmt_finalize(&insert_stmt)
+	defer sqlite.stmt_finalize_cleanup(&insert_stmt)
 
 	fmt.printf("parameter count: %d\n", sqlite.stmt_param_count(insert_stmt))
 	fmt.printf("index for :username = %d\n", sqlite.stmt_param_index(insert_stmt, ":username"))
@@ -146,7 +146,7 @@ main :: proc() {
 		fmt.println("prepare query failed:", sqlite.error_string(query_err))
 		return
 	}
-	defer sqlite.stmt_finalize(&query_stmt)
+	defer sqlite.stmt_finalize_cleanup(&query_stmt)
 
 	query_err, query_ok = sqlite.stmt_bind_named_text(&query_stmt, ":username", "ranger_one")
 	if !query_ok {

@@ -36,7 +36,7 @@ main :: proc() {
 		fmt.println("open failed:", sqlite.error_string(err))
 		return
 	}
-	defer sqlite.db_close(&db)
+	defer sqlite.db_close_cleanup(&db)
 
 	err, ok = sqlite.db_exec(db, `
 		CREATE TABLE users(
@@ -76,7 +76,7 @@ main :: proc() {
 	}
 	defer delete(first_user.display_name)
 	fmt.printf(
-		"query_one_struct -> {id=%d display_name=%q is_admin=%v score=%.2f}\n",
+		"query_one_struct -> {{id=%d display_name=%q is_admin=%v score=%.2f}}\n",
 		first_user.id,
 		first_user.display_name,
 		first_user.is_admin,
@@ -96,7 +96,7 @@ main :: proc() {
 	if found {
 		defer delete(optional_user.display_name)
 		fmt.printf(
-			"query_optional_struct(found) -> {id=%d display_name=%q is_admin=%v score=%.2f}\n",
+			"query_optional_struct(found) -> {{id=%d display_name=%q is_admin=%v score=%.2f}}\n",
 			optional_user.id,
 			optional_user.display_name,
 			optional_user.is_admin,
@@ -122,7 +122,7 @@ main :: proc() {
 		return
 	}
 	fmt.printf(
-		"query_optional_struct(missing) -> found=%v preserved_output={id=%d display_name=%q is_admin=%v score=%.2f}\n",
+		"query_optional_struct(missing) -> found=%v preserved_output={{id=%d display_name=%q is_admin=%v score=%.2f}}\n",
 		found,
 		missing_user.id,
 		missing_user.display_name,
@@ -139,16 +139,17 @@ main :: proc() {
 		fmt.println("db_query_all_struct failed:", sqlite.error_string(all_err))
 		return
 	}
-	defer delete(all_users)
-
-	for &user in all_users {
-		defer delete(user.display_name)
+	defer {
+		for &user in all_users {
+			delete(user.display_name)
+		}
+		delete(all_users)
 	}
 
 	fmt.printf("query_all_struct -> row_count=%d\n", len(all_users))
 	for user, index in all_users {
 		fmt.printf(
-			"  row[%d] = {id=%d display_name=%q is_admin=%v score=%.2f}\n",
+			"  row[%d] = {{id=%d display_name=%q is_admin=%v score=%.2f}}\n",
 			index,
 			user.id,
 			user.display_name,

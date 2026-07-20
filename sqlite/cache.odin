@@ -5,27 +5,35 @@ import raw "raw/generated"
 
 cache_init :: proc() -> Stmt_Cache {
 	return Stmt_Cache{
-		entries = make(map[string]^Cache_Entry),
+		entries = make(map[Stmt_Cache_Key]^Cache_Entry),
 	}
+}
+
+@(private)
+cache_flags_valid :: proc(flags: int) -> bool {
+	return flags >= 0 && u64(flags) <= u64(max(u32))
+}
+
+@(private)
+cache_key :: proc(sql: string, flags: u32) -> Stmt_Cache_Key {
+	return Stmt_Cache_Key{sql = sql, flags = flags}
 }
 
 // cache_destroy_entry removes the entry from the cache and releases its heap
 // allocations regardless of stmt_finalize's result. If finalize returns an
 // Error, that Error is propagated to the caller — the entry/stmt have still
 // been freed by the time the proc returns.
-cache_destroy_entry :: proc(cache: ^Stmt_Cache, sql: string, entry_ptr: ^Cache_Entry) -> (Error, bool) {
+cache_destroy_entry :: proc(cache: ^Stmt_Cache, key: Stmt_Cache_Key, entry_ptr: ^Cache_Entry) -> (Error, bool) {
 	if cache == nil {
 		return error_none(), true
 	}
 
-	lookup_sql := sql
-	if entry_ptr != nil && entry_ptr.stmt != nil && entry_ptr.stmt.owned_sql {
-		lookup_sql = entry_ptr.stmt.sql
-	}
-
-	delete_key(&cache.entries, lookup_sql)
+	delete_key(&cache.entries, key)
 
 	if entry_ptr == nil {
+		if len(cache.entries) == 0 {
+			cache.db = nil
+		}
 		return error_none(), true
 	}
 
@@ -39,6 +47,9 @@ cache_destroy_entry :: proc(cache: ^Stmt_Cache, sql: string, entry_ptr: ^Cache_E
 	}
 
 	free(entry_ptr)
+	if len(cache.entries) == 0 {
+		cache.db = nil
+	}
 
 	return finalize_err, finalize_ok
 }
@@ -49,20 +60,22 @@ cache_destroy :: proc(cache: ^Stmt_Cache) -> (Error, bool) {
 	}
 
 	err, ok := cache_clear(cache)
-	if !ok {
-		return err, false
-	}
-
 	delete(cache.entries)
-	return error_none(), true
+	cache.db = nil
+	return err, ok
 }
 
-cache_has :: proc(cache: Stmt_Cache, sql: string) -> bool {
-	if len(cache.entries) == 0 {
+cache_destroy_cleanup :: proc(cache: ^Stmt_Cache) {
+	err, _ := cache_destroy(cache)
+	error_destroy(&err)
+}
+
+cache_has :: proc(cache: Stmt_Cache, sql: string, flags: int = PERSISTENT_PREPARE_FLAGS) -> bool {
+	if len(cache.entries) == 0 || !cache_flags_valid(flags) {
 		return false
 	}
 
-	_, ok := cache.entries[sql]
+	_, ok := cache.entries[cache_key(sql, u32(flags))]
 	return ok
 }
 
@@ -70,12 +83,12 @@ cache_count :: proc(cache: Stmt_Cache) -> int {
 	return len(cache.entries)
 }
 
-cache_get :: proc(cache: ^Stmt_Cache, sql: string) -> (^Stmt, bool) {
-	if cache == nil || len(cache.entries) == 0 {
+cache_get :: proc(cache: ^Stmt_Cache, sql: string, flags: int = PERSISTENT_PREPARE_FLAGS) -> (^Stmt, bool) {
+	if cache == nil || len(cache.entries) == 0 || !cache_flags_valid(flags) {
 		return nil, false
 	}
 
-	entry_ptr, ok := cache.entries[sql]
+	entry_ptr, ok := cache.entries[cache_key(sql, u32(flags))]
 	if !ok || entry_ptr == nil || entry_ptr.stmt == nil {
 		return nil, false
 	}
@@ -101,21 +114,26 @@ cache_put :: proc(cache: ^Stmt_Cache, stmt: ^Stmt) -> (Error, bool) {
 	if stmt.sql == "" {
 		return error_make(int(raw.MISUSE), "sqlite: cache_put requires a non-empty SQL string"), false
 	}
+	if cache.db != nil && cache.db != stmt.db {
+		return error_make(int(raw.MISUSE), "sqlite: one statement cache cannot contain statements from multiple database handles"), false
+	}
 
-	owned_sql := strings.clone(stmt.sql)
+	key := cache_key(stmt.sql, stmt.prepare_flags)
 
-	if old_ptr, exists := cache.entries[stmt.sql]; exists && old_ptr != nil {
-		finalize_err, finalize_ok := cache_destroy_entry(cache, stmt.sql, old_ptr)
+	if old_ptr, exists := cache.entries[key]; exists && old_ptr != nil {
+		finalize_err, finalize_ok := cache_destroy_entry(cache, key, old_ptr)
 		if !finalize_ok {
-			delete(owned_sql)
 			return finalize_err, false
 		}
 	}
 
+	if !stmt.owned_sql {
+		stmt.sql = strings.clone(stmt.sql)
+		stmt.owned_sql = true
+	}
+
 	stored_stmt := new(Stmt)
 	stored_stmt^ = stmt^
-	stored_stmt.sql = owned_sql
-	stored_stmt.owned_sql = true
 
 	// Consume caller's stmt so they cannot double-finalize the same handle or
 	// alias the bound-storage dynamic arrays.
@@ -127,7 +145,8 @@ cache_put :: proc(cache: ^Stmt_Cache, stmt: ^Stmt) -> (Error, bool) {
 		used = true,
 	}
 
-	cache.entries[owned_sql] = entry_ptr
+	cache.db = stored_stmt.db
+	cache.entries[cache_key(stored_stmt.sql, stored_stmt.prepare_flags)] = entry_ptr
 	return error_none(), true
 }
 
@@ -136,25 +155,33 @@ cache_clear :: proc(cache: ^Stmt_Cache) -> (Error, bool) {
 		return error_none(), true
 	}
 
-	keys: [dynamic]string
+	keys: [dynamic]Stmt_Cache_Key
 	defer delete(keys)
-	for sql in cache.entries {
-		append(&keys, sql)
+	for key in cache.entries {
+		append(&keys, key)
 	}
 
-	for sql in keys {
-		entry_ptr, ok := cache.entries[sql]
+	first_err := error_none()
+	all_ok := true
+	for key in keys {
+		entry_ptr, ok := cache.entries[key]
 		if !ok {
 			continue
 		}
 
-		err, destroy_ok := cache_destroy_entry(cache, sql, entry_ptr)
+		err, destroy_ok := cache_destroy_entry(cache, key, entry_ptr)
 		if !destroy_ok {
-			return err, false
+			if all_ok {
+				first_err = err
+				all_ok = false
+			} else {
+				error_destroy(&err)
+			}
 		}
 	}
 
-	return error_none(), true
+	cache.db = nil
+	return first_err, all_ok
 }
 
 cache_reset_usage :: proc(cache: ^Stmt_Cache) {
@@ -162,8 +189,8 @@ cache_reset_usage :: proc(cache: ^Stmt_Cache) {
 		return
 	}
 
-	for sql in cache.entries {
-		entry_ptr, ok := cache.entries[sql]
+	for key in cache.entries {
+		entry_ptr, ok := cache.entries[key]
 		if !ok || entry_ptr == nil {
 			continue
 		}
@@ -176,30 +203,37 @@ cache_prune_unused :: proc(cache: ^Stmt_Cache) -> (int, Error, bool) {
 		return 0, error_none(), true
 	}
 
-	keys_to_remove: [dynamic]string
+	keys_to_remove: [dynamic]Stmt_Cache_Key
 	defer delete(keys_to_remove)
-	for sql, entry_ptr in cache.entries {
+	for key, entry_ptr in cache.entries {
 		if entry_ptr == nil || !entry_ptr.used {
-			append(&keys_to_remove, sql)
+			append(&keys_to_remove, key)
 		}
 	}
 
 	removed := 0
-	for sql in keys_to_remove {
-		entry_ptr, ok := cache.entries[sql]
+	first_err := error_none()
+	all_ok := true
+	for key in keys_to_remove {
+		entry_ptr, ok := cache.entries[key]
 		if !ok {
 			continue
 		}
 
-		err, destroy_ok := cache_destroy_entry(cache, sql, entry_ptr)
+		err, destroy_ok := cache_destroy_entry(cache, key, entry_ptr)
 		if !destroy_ok {
-			return removed, err, false
+			if all_ok {
+				first_err = err
+				all_ok = false
+			} else {
+				error_destroy(&err)
+			}
 		}
 
 		removed += 1
 	}
 
-	return removed, error_none(), true
+	return removed, first_err, all_ok
 }
 
 // db_prepare_cached returns a pointer to a cached prepared statement, preparing
@@ -217,8 +251,20 @@ db_prepare_cached :: proc(
 	if cache == nil {
 		return nil, error_make(int(raw.MISUSE), "sqlite: db_prepare_cached requires a non-nil cache; use stmt_prepare for one-off statements"), false
 	}
+	if db.handle == nil {
+		return nil, error_from_db(db, int(raw.MISUSE), sql), false
+	}
+	if !cache_flags_valid(flags) {
+		err := error_from_db(db, int(raw.RANGE), sql)
+		error_with_op(&err, "db_prepare_cached")
+		error_with_context(&err, "prepare flags exceed SQLite's u32 range")
+		return nil, err, false
+	}
+	if cache.db != nil && cache.db != db.handle {
+		return nil, error_make(int(raw.MISUSE), "sqlite: statement cache is currently bound to another database handle; clear it before reuse"), false
+	}
 
-	if stmt_ptr, ok := cache_get(cache, sql); ok {
+	if stmt_ptr, ok := cache_get(cache, sql, flags); ok {
 		err, reuse_ok := stmt_reuse(stmt_ptr)
 		if !reuse_ok {
 			return nil, err, false
@@ -233,11 +279,11 @@ db_prepare_cached :: proc(
 
 	put_err, put_ok := cache_put(cache, &stmt)
 	if !put_ok {
-		_, _ = stmt_finalize(&stmt)
+		stmt_finalize_cleanup(&stmt)
 		return nil, put_err, false
 	}
 
-	stmt_ptr, found := cache_get(cache, sql)
+	stmt_ptr, found := cache_get(cache, sql, flags)
 	if !found || stmt_ptr == nil {
 		return nil, error_make(int(raw.INTERNAL), "sqlite: cache_put did not retain the prepared statement"), false
 	}

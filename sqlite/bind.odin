@@ -16,7 +16,21 @@ stmt_bind_args_error :: proc(stmt: Stmt, message: string) -> (Error, bool) {
 }
 
 bind_index_valid :: proc(index: int) -> bool {
-	return index > 0
+	return index > 0 && index <= int(max(i32))
+}
+
+@(private)
+stmt_bind_index_check :: proc(stmt: ^Stmt, index: int) -> (Error, bool) {
+	if stmt == nil || stmt.handle == nil || index <= 0 {
+		return stmt_bind_error(Stmt{})
+	}
+	if index > int(max(i32)) {
+		err := error_from_stmt(stmt^, int(raw.RANGE))
+		error_with_op(&err, "stmt_bind")
+		error_with_context(&err, "parameter index exceeds SQLite's i32 range")
+		return err, false
+	}
+	return error_none(), true
 }
 
 stmt_clear_bound_storage :: proc(stmt: ^Stmt) {
@@ -51,64 +65,65 @@ stmt_release_blob_slot :: proc(stmt: ^Stmt, index: i32) {
 	}
 }
 
-// stmt_bind_track_text clones `value` into a cstring owned by stmt for this
-// parameter slot. The previous value bound to the same slot (if any) is freed,
-// so rebinding the same slot does not leak.
-stmt_bind_track_text :: proc(stmt: ^Stmt, index: i32, value: string) -> cstring {
+@(private)
+stmt_release_bound_slot :: proc(stmt: ^Stmt, index: i32) {
 	stmt_release_text_slot(stmt, index)
-	c_value := strings.clone_to_cstring(value)
-	stmt.bound_text_storage[index] = c_value
-	return c_value
-}
-
-// stmt_bind_track_blob clones `value` into a slice owned by stmt for this
-// parameter slot. The previous value bound to the same slot is freed.
-stmt_bind_track_blob :: proc(stmt: ^Stmt, index: i32, value: []u8) -> rawptr {
 	stmt_release_blob_slot(stmt, index)
-	if len(value) == 0 {
-		stmt.bound_blob_storage[index] = []u8{}
-		return nil
-	}
-
-	stored := make([]u8, len(value))
-	copy(stored, value)
-	stmt.bound_blob_storage[index] = stored
-	return rawptr(&stmt.bound_blob_storage[index][0])
 }
+
+// SQLite treats a NULL data pointer as SQL NULL even when the byte count is
+// zero. A stable non-NULL address preserves the distinction for empty blobs.
+stmt_empty_blob_sentinel: u8
 
 stmt_bind_null :: proc(stmt: ^Stmt, index: int) -> (Error, bool) {
-	if stmt == nil || stmt.handle == nil || !bind_index_valid(index) {
-		return stmt_bind_error(Stmt{})
+	err, valid := stmt_bind_index_check(stmt, index)
+	if !valid {
+		return err, false
 	}
 
 	rc := raw.bind_null(stmt.handle, i32(index))
+	if rc == raw.OK {
+		stmt_release_bound_slot(stmt, i32(index))
+	}
 	return result_from_stmt(stmt^, int(rc))
 }
 
 stmt_bind_i32 :: proc(stmt: ^Stmt, index: int, value: i32) -> (Error, bool) {
-	if stmt == nil || stmt.handle == nil || !bind_index_valid(index) {
-		return stmt_bind_error(Stmt{})
+	err, valid := stmt_bind_index_check(stmt, index)
+	if !valid {
+		return err, false
 	}
 
 	rc := raw.bind_int(stmt.handle, i32(index), value)
+	if rc == raw.OK {
+		stmt_release_bound_slot(stmt, i32(index))
+	}
 	return result_from_stmt(stmt^, int(rc))
 }
 
 stmt_bind_i64 :: proc(stmt: ^Stmt, index: int, value: i64) -> (Error, bool) {
-	if stmt == nil || stmt.handle == nil || !bind_index_valid(index) {
-		return stmt_bind_error(Stmt{})
+	err, valid := stmt_bind_index_check(stmt, index)
+	if !valid {
+		return err, false
 	}
 
 	rc := raw.bind_int64(stmt.handle, i32(index), raw.Int64(value))
+	if rc == raw.OK {
+		stmt_release_bound_slot(stmt, i32(index))
+	}
 	return result_from_stmt(stmt^, int(rc))
 }
 
 stmt_bind_f64 :: proc(stmt: ^Stmt, index: int, value: f64) -> (Error, bool) {
-	if stmt == nil || stmt.handle == nil || !bind_index_valid(index) {
-		return stmt_bind_error(Stmt{})
+	err, valid := stmt_bind_index_check(stmt, index)
+	if !valid {
+		return err, false
 	}
 
 	rc := raw.bind_double(stmt.handle, i32(index), value)
+	if rc == raw.OK {
+		stmt_release_bound_slot(stmt, i32(index))
+	}
 	return result_from_stmt(stmt^, int(rc))
 }
 
@@ -120,57 +135,103 @@ stmt_bind_bool :: proc(stmt: ^Stmt, index: int, value: bool) -> (Error, bool) {
 }
 
 stmt_bind_text :: proc(stmt: ^Stmt, index: int, value: string) -> (Error, bool) {
-	if stmt == nil || stmt.handle == nil || !bind_index_valid(index) {
-		return stmt_bind_error(Stmt{})
-	}
-	if len(value) > int(max(i32)) {
-		err := error_from_stmt(stmt^, int(raw.TOOBIG))
-		error_with_op(&err, "stmt_bind_text")
-		error_with_context(&err, "text value exceeds 2 GiB; sqlite3_bind_text length is i32")
+	err, valid := stmt_bind_index_check(stmt, index)
+	if !valid {
 		return err, false
 	}
 
-	c_value := stmt_bind_track_text(stmt, i32(index), value)
+	// Allocate the candidate without touching the current SQLITE_STATIC
+	// backing. If SQLite rejects the rebind, the old binding remains valid.
+	c_value := strings.clone_to_cstring(value)
 
-	rc := raw.bind_text(
+	rc := raw.bind_text64(
 		stmt.handle,
 		i32(index),
 		c_value,
-		i32(len(value)),
+		raw.Uint64(len(value)),
 		raw.STATIC,
+		u8(raw.UTF8),
 	)
-	return result_from_stmt(stmt^, int(rc))
+	if rc != raw.OK {
+		delete(c_value)
+		return result_from_stmt(stmt^, int(rc))
+	}
+
+	stmt_release_bound_slot(stmt, i32(index))
+	stmt.bound_text_storage[i32(index)] = c_value
+	return error_none(), true
+
+}
+
+// stmt_bind_text64 is the explicitly named 64-bit-length variant. Odin
+// strings are int-sized, so stmt_bind_text already uses sqlite3_bind_text64.
+stmt_bind_text64 :: proc(stmt: ^Stmt, index: int, value: string) -> (Error, bool) {
+	return stmt_bind_text(stmt, index, value)
 }
 
 stmt_bind_blob :: proc(stmt: ^Stmt, index: int, value: []u8) -> (Error, bool) {
-	if stmt == nil || stmt.handle == nil || !bind_index_valid(index) {
-		return stmt_bind_error(Stmt{})
-	}
-	if len(value) > int(max(i32)) {
-		err := error_from_stmt(stmt^, int(raw.TOOBIG))
-		error_with_op(&err, "stmt_bind_blob")
-		error_with_context(&err, "blob value exceeds 2 GiB; sqlite3_bind_blob length is i32")
+	err, valid := stmt_bind_index_check(stmt, index)
+	if !valid {
 		return err, false
 	}
 
-	data_ptr := stmt_bind_track_blob(stmt, i32(index), value)
+	stored: []u8
+	data_ptr := rawptr(&stmt_empty_blob_sentinel)
+	if len(value) > 0 {
+		stored = make([]u8, len(value))
+		copy(stored, value)
+		data_ptr = rawptr(&stored[0])
+	}
 
-	rc := raw.bind_blob(
+	rc := raw.bind_blob64(
 		stmt.handle,
 		i32(index),
 		data_ptr,
-		i32(len(value)),
+		raw.Uint64(len(value)),
 		raw.STATIC,
 	)
-	return result_from_stmt(stmt^, int(rc))
+	if rc != raw.OK {
+		delete(stored)
+		return result_from_stmt(stmt^, int(rc))
+	}
+
+	stmt_release_bound_slot(stmt, i32(index))
+	if len(stored) > 0 {
+		stmt.bound_blob_storage[i32(index)] = stored
+	}
+	return error_none(), true
+}
+
+// stmt_bind_blob64 is the explicitly named 64-bit-length variant. Odin slices
+// are int-sized, so stmt_bind_blob already uses sqlite3_bind_blob64.
+stmt_bind_blob64 :: proc(stmt: ^Stmt, index: int, value: []u8) -> (Error, bool) {
+	return stmt_bind_blob(stmt, index, value)
 }
 
 stmt_bind_zeroblob :: proc(stmt: ^Stmt, index: int, size: int) -> (Error, bool) {
-	if stmt == nil || stmt.handle == nil || !bind_index_valid(index) {
-		return stmt_bind_error(Stmt{})
+	err, valid := stmt_bind_index_check(stmt, index)
+	if !valid {
+		return err, false
+	}
+	if size < 0 {
+		err = error_from_stmt(stmt^, int(raw.RANGE))
+		error_with_op(&err, "stmt_bind_zeroblob")
+		error_with_context(&err, "zeroblob size must be non-negative")
+		return err, false
+	}
+	return stmt_bind_zeroblob64(stmt, index, u64(size))
+}
+
+stmt_bind_zeroblob64 :: proc(stmt: ^Stmt, index: int, size: u64) -> (Error, bool) {
+	err, valid := stmt_bind_index_check(stmt, index)
+	if !valid {
+		return err, false
 	}
 
-	rc := raw.bind_zeroblob(stmt.handle, i32(index), i32(size))
+	rc := raw.bind_zeroblob64(stmt.handle, i32(index), raw.Uint64(size))
+	if rc == raw.OK {
+		stmt_release_bound_slot(stmt, i32(index))
+	}
 	return result_from_stmt(stmt^, int(rc))
 }
 
@@ -211,66 +272,79 @@ stmt_param_name :: proc(stmt: Stmt, index: int) -> string {
 	return string(name)
 }
 
-stmt_bind_named_null :: proc(stmt: ^Stmt, name: string) -> (Error, bool) {
+@(private)
+stmt_bind_named_index :: proc(stmt: ^Stmt, name: string) -> (int, Error, bool) {
+	if stmt == nil || stmt.handle == nil {
+		err, _ := stmt_bind_error(Stmt{})
+		return 0, err, false
+	}
 	index := stmt_param_index(stmt^, name)
 	if index == 0 {
-		return error_from_stmt(stmt^, int(raw.RANGE)), false
+		return 0, error_from_stmt(stmt^, int(raw.RANGE)), false
+	}
+	return index, error_none(), true
+}
+
+stmt_bind_named_null :: proc(stmt: ^Stmt, name: string) -> (Error, bool) {
+	index, err, ok := stmt_bind_named_index(stmt, name)
+	if !ok {
+		return err, false
 	}
 	return stmt_bind_null(stmt, index)
 }
 
 stmt_bind_named_i32 :: proc(stmt: ^Stmt, name: string, value: i32) -> (Error, bool) {
-	index := stmt_param_index(stmt^, name)
-	if index == 0 {
-		return error_from_stmt(stmt^, int(raw.RANGE)), false
+	index, err, ok := stmt_bind_named_index(stmt, name)
+	if !ok {
+		return err, false
 	}
 	return stmt_bind_i32(stmt, index, value)
 }
 
 stmt_bind_named_i64 :: proc(stmt: ^Stmt, name: string, value: i64) -> (Error, bool) {
-	index := stmt_param_index(stmt^, name)
-	if index == 0 {
-		return error_from_stmt(stmt^, int(raw.RANGE)), false
+	index, err, ok := stmt_bind_named_index(stmt, name)
+	if !ok {
+		return err, false
 	}
 	return stmt_bind_i64(stmt, index, value)
 }
 
 stmt_bind_named_f64 :: proc(stmt: ^Stmt, name: string, value: f64) -> (Error, bool) {
-	index := stmt_param_index(stmt^, name)
-	if index == 0 {
-		return error_from_stmt(stmt^, int(raw.RANGE)), false
+	index, err, ok := stmt_bind_named_index(stmt, name)
+	if !ok {
+		return err, false
 	}
 	return stmt_bind_f64(stmt, index, value)
 }
 
 stmt_bind_named_bool :: proc(stmt: ^Stmt, name: string, value: bool) -> (Error, bool) {
-	index := stmt_param_index(stmt^, name)
-	if index == 0 {
-		return error_from_stmt(stmt^, int(raw.RANGE)), false
+	index, err, ok := stmt_bind_named_index(stmt, name)
+	if !ok {
+		return err, false
 	}
 	return stmt_bind_bool(stmt, index, value)
 }
 
 stmt_bind_named_text :: proc(stmt: ^Stmt, name: string, value: string) -> (Error, bool) {
-	index := stmt_param_index(stmt^, name)
-	if index == 0 {
-		return error_from_stmt(stmt^, int(raw.RANGE)), false
+	index, err, ok := stmt_bind_named_index(stmt, name)
+	if !ok {
+		return err, false
 	}
 	return stmt_bind_text(stmt, index, value)
 }
 
 stmt_bind_named_blob :: proc(stmt: ^Stmt, name: string, value: []u8) -> (Error, bool) {
-	index := stmt_param_index(stmt^, name)
-	if index == 0 {
-		return error_from_stmt(stmt^, int(raw.RANGE)), false
+	index, err, ok := stmt_bind_named_index(stmt, name)
+	if !ok {
+		return err, false
 	}
 	return stmt_bind_blob(stmt, index, value)
 }
 
 stmt_bind_named :: proc(stmt: ^Stmt, name: string, arg: Bind_Arg) -> (Error, bool) {
-	index := stmt_param_index(stmt^, name)
-	if index == 0 {
-		return error_from_stmt(stmt^, int(raw.RANGE)), false
+	index, err, ok := stmt_bind_named_index(stmt, name)
+	if !ok {
+		return err, false
 	}
 
 	return stmt_bind(stmt, index, arg)

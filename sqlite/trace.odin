@@ -3,6 +3,27 @@ package sqlite
 import "core:fmt"
 import raw "raw/generated"
 
+trace_config_clone :: proc(config: Trace_Config, allocator := context.allocator) -> Trace_Config {
+	out := config
+	if len(config.events) > 0 {
+		out.events = make([dynamic]Trace_Event, len(config.events), allocator)
+		copy(out.events[:], config.events[:])
+	} else {
+		out.events = nil
+	}
+	return out
+}
+
+trace_config_destroy :: proc(config: ^Trace_Config, allocator := context.allocator) {
+	if config == nil {
+		return
+	}
+	// Dynamic arrays retain their allocator internally.
+	_ = allocator
+	delete(config.events)
+	config^ = Trace_Config{}
+}
+
 trace_event_mask :: proc(config: Trace_Config) -> u32 {
 	mask := u32(0)
 
@@ -114,18 +135,16 @@ db_trace_enable :: proc(db: ^DB, config: Trace_Config) -> (Error, bool) {
 
 	mask := trace_event_mask(config)
 
-	delete(db.trace_config.events)
-
-	new_config := config
-	if len(config.events) > 0 {
-		new_config.events = make([dynamic]Trace_Event, len(config.events))
-		copy(new_config.events[:], config.events[:])
-	} else {
-		new_config.events = nil
+	// Clone first because config may itself be a snapshot returned from this
+	// DB. Deleting the old list before copying would read freed memory.
+	new_config := trace_config_clone(config, context.allocator)
+	if len(db.trace_config.events) > 0 {
+		trace_config_destroy(&db.trace_config, db.trace_allocator)
 	}
 
 	db.trace_enabled = mask != 0
 	db.trace_config = new_config
+	db.trace_allocator = context.allocator
 	return error_none(), true
 }
 
@@ -136,10 +155,13 @@ db_trace_disable :: proc(db: ^DB) -> (Error, bool) {
 		return err, false
 	}
 
-	delete(db.trace_config.events)
+	if len(db.trace_config.events) > 0 {
+		trace_config_destroy(&db.trace_config, db.trace_allocator)
+	}
 
 	db.trace_enabled = false
 	db.trace_config = Trace_Config{}
+	db.trace_allocator = {}
 	return error_none(), true
 }
 
@@ -147,8 +169,10 @@ db_trace_enabled :: proc(db: DB) -> bool {
 	return db.handle != nil && db.trace_enabled
 }
 
-db_trace_config :: proc(db: DB) -> Trace_Config {
-	return db.trace_config
+// db_trace_config returns an owned deep copy. Destroy it with
+// trace_config_destroy using the same allocator.
+db_trace_config :: proc(db: DB, allocator := context.allocator) -> Trace_Config {
+	return trace_config_clone(db.trace_config, allocator)
 }
 
 db_trace_log_stmt :: proc(
