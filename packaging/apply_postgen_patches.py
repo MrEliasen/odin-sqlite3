@@ -536,6 +536,12 @@ HOST_ENABLED_FEATURE_GATES: tuple[str, ...] = (
     "HAS_UNLOCK_NOTIFY_API",
 )
 
+ALL_FEATURE_GATES: tuple[str, ...] = tuple(FEATURE_GATED_API_SYMBOLS)
+FEATURE_PROFILES: dict[str, tuple[str, ...]] = {
+    "all": ALL_FEATURE_GATES,
+    "homebrew": HOST_ENABLED_FEATURE_GATES,
+}
+
 UNSUPPORTED_CEROD_SYMBOL = "sqlite3_activate_cerod"
 EXPECTED_BASELINE_API_COUNT = 283
 EXPECTED_OPTIONAL_API_COUNT = 81
@@ -1281,27 +1287,38 @@ def odin_abi_probe_source() -> str:
     return "\n".join(lines)
 
 
-def odin_optional_link_probe_source() -> str:
-    linked_symbols = [
-        symbol for symbol in OPTIONAL_API_SYMBOLS
-        if symbol not in HOST_MISSING_OPTIONAL_SYMBOLS
+def odin_optional_link_probe_source(enabled_feature_gates: tuple[str, ...]) -> str:
+    referenced_symbols = [
+        symbol
+        for gate in enabled_feature_gates
+        for symbol in FEATURE_GATED_API_SYMBOLS[gate]
     ]
     lines = [
         "package main",
         "",
         'import "core:fmt"',
+        'import "core:os"',
         'import raw "project:sqlite/raw/generated"',
         "",
         "main :: proc() {",
-        f"\treferences := [{len(linked_symbols)}]rawptr {{",
+        f"\treferences := [{len(referenced_symbols)}]rawptr {{",
     ]
-    for symbol in linked_symbols:
+    for symbol in referenced_symbols:
         local_name = symbol.removeprefix("sqlite3_")
         lines.append(f"\t\ttransmute(rawptr)(raw.{local_name}),")
     lines.extend(
         (
             "\t}",
-            '\tfmt.printf("linked optional symbols: %d\\n", len(references))',
+            "\tloaded_references := 0",
+            "\tfor reference in references {",
+            "\t\tif reference != nil {",
+            "\t\t\tloaded_references += 1",
+            "\t\t}",
+            "\t}",
+            "\tif loaded_references != len(references) {",
+            "\t\tos.exit(1)",
+            "\t}",
+            '\tfmt.printf("referenced optional symbols: %d\\n", loaded_references)',
             "}",
             "",
         )
@@ -1423,7 +1440,7 @@ def verify_host_symbols(library: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="odin-sqlite3-link-") as temp_name:
         temp_dir = Path(temp_name)
         (temp_dir / "link_probe.odin").write_text(
-            odin_optional_link_probe_source(),
+            odin_optional_link_probe_source(HOST_ENABLED_FEATURE_GATES),
             encoding="utf-8",
         )
         command = [
@@ -1443,9 +1460,49 @@ def verify_host_symbols(library: Path) -> None:
     print(
         f"Host symbols verified: {EXPECTED_HOST_OPTIONAL_API_COUNT}/"
         f"{EXPECTED_OPTIONAL_API_COUNT} optional APIs exported by {library}; "
-        f"all {EXPECTED_HOST_OPTIONAL_API_COUNT} linked through Odin; "
+        f"all {EXPECTED_HOST_OPTIONAL_API_COUNT} referenced by an Odin link probe; "
         "normalize, statement scan-status, snapshot, and sqlite3_activate_cerod "
         "are absent."
+    )
+
+
+def verify_optional_link(library: Path, feature_profile: str) -> None:
+    ensure_file(library)
+    enabled_feature_gates = FEATURE_PROFILES[feature_profile]
+    linked_symbol_count = sum(
+        len(FEATURE_GATED_API_SYMBOLS[gate]) for gate in enabled_feature_gates
+    )
+
+    odin = shutil.which("odin")
+    if odin is None:
+        fail("odin is required for --verify-optional-link")
+    with tempfile.TemporaryDirectory(prefix="odin-sqlite3-optional-link-") as temp_name:
+        temp_dir = Path(temp_name)
+        (temp_dir / "link_probe.odin").write_text(
+            odin_optional_link_probe_source(enabled_feature_gates),
+            encoding="utf-8",
+        )
+        command = [
+            odin,
+            "run",
+            str(temp_dir),
+            f"-collection:project={PROJECT_ROOT}",
+            *(f"-define:SQLITE_{gate}=true" for gate in enabled_feature_gates),
+            f"-define:SQLITE_LIB=system:{library.resolve().as_posix()}",
+            "-o:none",
+        ]
+        output = run_checked(command, cwd=PROJECT_ROOT)
+
+    expected_output = f"referenced optional symbols: {linked_symbol_count}"
+    if expected_output not in output.splitlines():
+        fail(
+            "optional symbol probe did not report the expected reference count: "
+            f"expected {expected_output!r}, output={output!r}"
+        )
+    print(
+        f"Optional symbol link-and-load/reference probe passed: {linked_symbol_count}/"
+        f"{EXPECTED_OPTIONAL_API_COUNT} symbols for profile {feature_profile!r} "
+        f"through {library.resolve()}."
     )
 
 
@@ -1461,6 +1518,21 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         metavar="SQLITE_LIBRARY",
         help="verify the known 72/81 optional-symbol profile of a SQLite library",
+    )
+    parser.add_argument(
+        "--verify-optional-link",
+        type=Path,
+        metavar="SQLITE_LIBRARY",
+        help=(
+            "link and run a non-invoking reference probe for every optional "
+            "symbol in the selected feature profile"
+        ),
+    )
+    parser.add_argument(
+        "--feature-profile",
+        choices=tuple(FEATURE_PROFILES),
+        default="all",
+        help="optional API profile used by --verify-optional-link (default: all)",
     )
     return parser.parse_args()
 
@@ -1490,6 +1562,8 @@ def main() -> int:
         verify_abi()
     if args.verify_host_symbols is not None:
         verify_host_symbols(args.verify_host_symbols)
+    if args.verify_optional_link is not None:
+        verify_optional_link(args.verify_optional_link, args.feature_profile)
     return 0
 
 

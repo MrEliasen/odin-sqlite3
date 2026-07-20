@@ -1,13 +1,15 @@
 SHELL := /bin/sh
 
-SQLITE_VERSION ?= 3530100
-SQLITE_AMALGAMATION_ZIP := sqlite-amalgamation-$(SQLITE_VERSION).zip
-SQLITE_AMALGAMATION_URL := https://sqlite.org/2026/$(SQLITE_AMALGAMATION_ZIP)
+PYTHON ?= python3
+ODIN ?= odin
+QUALIFICATION_SQLITE_LIBRARY ?=
+SQLITE_FEATURE_PROFILE ?= default
 
 DEPS_DIR := deps
 DEPS_BIN_DIR := $(DEPS_DIR)/bin
 BINDGEN_DIR := $(DEPS_DIR)/odin-c-bindgen
 BINDGEN_BIN := $(DEPS_BIN_DIR)/bindgen
+BINDGEN_COMMIT := 408a6f4e3c35a17e4517dc374c5c7edd19081e9f
 
 INPUT_DIR := input
 SQLITE_HEADER := $(INPUT_DIR)/sqlite3.h
@@ -24,18 +26,24 @@ help:
 	@echo "  install-build-deps  Install build deps for macOS or Linux"
 	@echo "  bindgen             Clone and build odin-c-bindgen into deps/bin"
 	@echo "  download-sqlite     Download sqlite3.h into input/"
+	@echo "  build-ci-sqlite     Build the pinned all-feature SQLite qualification library"
 	@echo "  generate            Generate raw bindings into sqlite/raw/generated"
 	@echo "  postgen-patch       Apply deterministic post-generation patches to raw bindings"
 	@echo "  verify-raw-abi      Compare generated Odin layouts with both C headers"
 	@echo "  regenerate          Regenerate raw bindings and apply post-generation patches"
 	@echo "  package             Create release-friendly package directory in out/"
 	@echo "  package-dir         Create package directory (legacy alias)"
+	@echo "  package-check       Type-check the packaged wrapper and rewritten examples"
 	@echo "  package-zip         Zip the release package"
 	@echo "  clean-generated     Remove generated raw bindings"
 	@echo "  clean-out           Remove out/"
 	@echo "  clean-deps          Remove deps/"
 	@echo "  clean               Remove generated, out, and deps"
-	@echo "  test                Runs odin checks and tests"
+	@echo "  test                Run all checks, tests, and examples natively"
+	@echo "  cross-check         Compile-only raw/wrapper checks for 64-bit macOS/Linux/Windows"
+	@echo "  test-sanitize       Run all tests and examples natively under AddressSanitizer"
+	@echo "  test-orchestration  Negative self-test for fail-fast qualification"
+	@echo "  verify-optional-link  Run optional-symbol link/reference probe (requires QUALIFICATION_SQLITE_LIBRARY)"
 
 .PHONY: install-build-deps
 install-build-deps:
@@ -70,7 +78,7 @@ $(DEPS_BIN_DIR):
 
 $(BINDGEN_DIR):
 	git clone https://github.com/karl-zylinski/odin-c-bindgen.git "$(BINDGEN_DIR)"; \
-	cd "$(BINDGEN_DIR)" && git checkout 408a6f4e
+	cd "$(BINDGEN_DIR)" && git checkout "$(BINDGEN_COMMIT)"
 
 $(BINDGEN_BIN): | $(DEPS_BIN_DIR) $(BINDGEN_DIR)
 	@set -eu; \
@@ -115,17 +123,18 @@ $(INPUT_DIR):
 
 $(SQLITE_HEADER): | $(INPUT_DIR)
 	@set -eu; \
-	TMP_ZIP="$(OUT_DIR)/$(SQLITE_AMALGAMATION_ZIP)"; \
-	TMP_DIR="$(OUT_DIR)/sqlite-amalgamation-$(SQLITE_VERSION)"; \
-	mkdir -p "$(OUT_DIR)"; \
-	curl -L "$(SQLITE_AMALGAMATION_URL)" -o "$$TMP_ZIP"; \
-	rm -rf "$$TMP_DIR"; \
-	unzip -q "$$TMP_ZIP" -d "$(OUT_DIR)"; \
-	cp "$$TMP_DIR/sqlite3.h" "$(SQLITE_HEADER)"; \
-	echo "Wrote $(SQLITE_HEADER)"
+	$(PYTHON) ci/build_sqlite.py \
+		--output "$(OUT_DIR)/sqlite-source" \
+		--header-output "$(SQLITE_HEADER)" \
+		--header-only
 
 .PHONY: download-sqlite
 download-sqlite: $(SQLITE_HEADER)
+
+.PHONY: build-ci-sqlite
+build-ci-sqlite:
+	@set -eu; \
+	$(PYTHON) ci/build_sqlite.py --output "$(OUT_DIR)/ci-sqlite"
 
 .PHONY: generate
 generate: $(BINDGEN_BIN) $(SQLITE_HEADER)
@@ -148,12 +157,12 @@ generate: $(BINDGEN_BIN) $(SQLITE_HEADER)
 .PHONY: postgen-patch
 postgen-patch:
 	@set -eu; \
-	python3 packaging/apply_postgen_patches.py
+	$(PYTHON) packaging/apply_postgen_patches.py
 
 .PHONY: verify-raw-abi
 verify-raw-abi:
 	@set -eu; \
-	python3 packaging/apply_postgen_patches.py --verify-abi
+	$(PYTHON) packaging/apply_postgen_patches.py --verify-abi
 
 .PHONY: regenerate
 regenerate: generate postgen-patch
@@ -178,8 +187,17 @@ package-dir:
 	done; \
 	echo "Wrote $(PACKAGE_DIR)"
 
+.PHONY: package-check
+package-check: package-dir
+	@set -eu; \
+	$(ODIN) check "$(PACKAGE_DIR)/sqlite" -no-entry-point; \
+	find "$(PACKAGE_DIR)/examples" -name main.odin -exec dirname {} \; | sort | while IFS= read -r directory; do \
+		$(ODIN) check "$$directory" || exit 1; \
+	done; \
+	echo "Packaged wrapper and examples type-check successfully"
+
 .PHONY: package-zip
-package-zip: package-dir
+package-zip: package-check
 	@set -eu; \
 	rm -f "$(PACKAGE_ZIP)"; \
 	cd "$(OUT_DIR)" && zip -qr "$$(basename "$(PACKAGE_ZIP)")" "$$(basename "$(PACKAGE_DIR)")"; \
@@ -203,11 +221,37 @@ clean: clean-generated clean-out clean-deps
 .PHONY: test
 test:
 	@set -eu; \
-	odin check sqlite -no-entry-point; \
-	odin check tests; \
-	find packaging/examples -name main.odin -exec dirname {} \; | sort | while read d; do odin check "$$d" || exit 1; done; \
-	odin run tests; \
-	find packaging/examples -name main.odin -exec dirname {} \; | sort | while read d; do echo "Running example $$d"; odin run "$$d" || exit 1; done
+	$(PYTHON) ci/qualify.py --odin "$(ODIN)" native \
+		$(if $(strip $(QUALIFICATION_SQLITE_LIBRARY)),--sqlite-library "$(QUALIFICATION_SQLITE_LIBRARY)") \
+		--feature-profile "$(SQLITE_FEATURE_PROFILE)"
+
+.PHONY: cross-check
+cross-check:
+	@set -eu; \
+	$(PYTHON) ci/qualify.py --odin "$(ODIN)" cross-check
+
+.PHONY: test-sanitize
+test-sanitize:
+	@set -eu; \
+	$(PYTHON) ci/qualify.py --odin "$(ODIN)" sanitize \
+		$(if $(strip $(QUALIFICATION_SQLITE_LIBRARY)),--sqlite-library "$(QUALIFICATION_SQLITE_LIBRARY)") \
+		--feature-profile "$(SQLITE_FEATURE_PROFILE)"
+
+.PHONY: test-orchestration
+test-orchestration:
+	@set -eu; \
+	$(PYTHON) ci/qualify.py self-test
+
+.PHONY: verify-optional-link
+verify-optional-link:
+	@set -eu; \
+	if [ -z "$(strip $(QUALIFICATION_SQLITE_LIBRARY))" ]; then \
+		echo "QUALIFICATION_SQLITE_LIBRARY must name the SQLite library to verify"; \
+		exit 2; \
+	fi; \
+	$(PYTHON) packaging/apply_postgen_patches.py \
+		--verify-optional-link "$(QUALIFICATION_SQLITE_LIBRARY)" \
+		--feature-profile "$(SQLITE_FEATURE_PROFILE)"
 
 .PHONY: publish
 publish:

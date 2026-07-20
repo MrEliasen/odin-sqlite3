@@ -48,6 +48,21 @@ relative to `sqlite/raw/generated/sqlite3.odin`.
 On Windows, provide a static or DLL import `.lib`; the runtime `.dll` itself is
 not a linker input.
 
+### Optional API feature gates
+
+The generated raw surface contains SQLite APIs that upstream libraries may
+omit. They are disabled by default and are available only when the corresponding
+`SQLITE_HAS_*` definition is true. Enable a definition only when the exact
+library selected by `SQLITE_LIB` was compiled with that feature; otherwise an
+application that references the API will fail to link.
+
+The project qualification workflow builds checksum-pinned SQLite 3.53.1 with
+all optional families, then runs a probe that strongly references all 81 gated
+symbols and checks that every loaded address is non-null on Linux, macOS, and
+Windows. This proves the symbols link and load; it does not functionally invoke
+those APIs. The separate cross-target checks are compile-only and do not claim
+runtime compatibility.
+
 ## Concurrency
 
 `db_open` and `db_open_into` request SQLite's `OPEN_FULLMUTEX` (serialized)
@@ -92,7 +107,9 @@ unpacked package.
 ## Release workflow
 
 `make package` (or its `package-dir` alias) creates the unpacked release
-directory. `make package-zip` rebuilds that directory and creates the zip.
+directory. `make package-check` rebuilds and type-checks that directory after
+the example imports are rewritten. `make package-zip` includes that check
+before creating the zip.
 
 This package should be produced from the stable regeneration path:
 

@@ -25,8 +25,8 @@ test_connection_open_into :: proc() {
 		path = make_temp_db_path("connection_open_into"),
 	}
 	remove_file_if_exists(test_db.path)
-	defer remove_file_if_exists(test_db.path)
 	defer delete(test_db.path)
+	defer remove_file_if_exists(test_db.path)
 
 	err, ok := sqlite.db_open_into(&test_db.db, test_db.path)
 	expect_no_error(err, ok, "db_open_into should open a database")
