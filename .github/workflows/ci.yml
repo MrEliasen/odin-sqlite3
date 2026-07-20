@@ -113,12 +113,16 @@ jobs:
       - name: Build pinned all-feature SQLite (Unix)
         if: runner.os != 'Windows'
         shell: bash
-        run: python3 ci/build_sqlite.py --output out/ci-sqlite
+        run: >-
+          python3 ci/build_sqlite.py --output out/ci-sqlite
+          --header-output input/sqlite3.h
 
       - name: Build pinned all-feature SQLite (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: python ci/build_sqlite.py --output out/ci-sqlite
+        run: >-
+          python ci/build_sqlite.py --output out/ci-sqlite
+          --header-output input/sqlite3.h
 
       - name: Run complete native suite and all examples (Unix)
         if: runner.os != 'Windows'
@@ -208,12 +212,16 @@ jobs:
       - name: Build pinned SQLite for sanitizer run (Unix)
         if: runner.os != 'Windows'
         shell: bash
-        run: python3 ci/build_sqlite.py --output out/ci-sqlite
+        run: >-
+          python3 ci/build_sqlite.py --output out/ci-sqlite
+          --header-output input/sqlite3.h
 
       - name: Build pinned SQLite for sanitizer run (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: python ci/build_sqlite.py --output out/ci-sqlite
+        run: >-
+          python ci/build_sqlite.py --output out/ci-sqlite
+          --header-output input/sqlite3.h
 
       - name: Run complete suite and examples under ASan (Unix)
         if: runner.os != 'Windows'

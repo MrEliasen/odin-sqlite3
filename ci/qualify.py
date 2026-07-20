@@ -122,15 +122,47 @@ def feature_arguments(profile: str) -> list[str]:
     raise QualificationError(f"unknown SQLite feature profile: {profile}")
 
 
+def sqlite_library_import_value(
+    library: Path,
+    *,
+    windows: bool | None = None,
+) -> str:
+    if windows is None:
+        windows = os.name == "nt"
+    if windows:
+        try:
+            relative = os.path.relpath(library, start=RAW_PACKAGE)
+        except ValueError as error:
+            raise QualificationError(
+                "on Windows, the SQLite library must be on the same drive as "
+                f"the generated binding: {library}"
+            ) from error
+        # Odin resolves non-system foreign imports relative to the package that
+        # declares them. A relative path also avoids treating the drive-letter
+        # colon in an absolute Windows path as import syntax.
+        return Path(relative).as_posix()
+    return f"system:{library.as_posix()}"
+
+
 def sqlite_library_argument(library: Path | None) -> list[str]:
     if library is None:
         return []
     resolved = library.resolve()
     if not resolved.is_file():
         raise QualificationError(f"SQLite library does not exist: {resolved}")
-    # Forward slashes are accepted by Odin on every host and avoid a quoted
-    # backslash becoming part of the Windows #config string.
-    return [f"-define:SQLITE_LIB=system:{resolved.as_posix()}"]
+    return [f"-define:SQLITE_LIB={sqlite_library_import_value(resolved)}"]
+
+
+def executable_output_path(
+    output_dir: Path,
+    name: str,
+    *,
+    windows: bool | None = None,
+) -> Path:
+    if windows is None:
+        windows = os.name == "nt"
+    suffix = ".exe" if windows else ""
+    return output_dir / f"{name}{suffix}"
 
 
 def native_commands(
@@ -163,7 +195,13 @@ def native_commands(
         for example in find_examples()
     )
     commands.append(
-        [odin, "run", str(TEST_PACKAGE), *build_args, f"-out:{output_dir / 'tests'}"]
+        [
+            odin,
+            "run",
+            str(TEST_PACKAGE),
+            *build_args,
+            f"-out:{executable_output_path(output_dir, 'tests')}",
+        ]
     )
     commands.extend(
         [
@@ -171,7 +209,7 @@ def native_commands(
             "run",
             str(package),
             *build_args,
-            f"-out:{output_dir / f'feature-{package.name}'}",
+            f"-out:{executable_output_path(output_dir, f'feature-{package.name}')}",
         ]
         for package in feature_packages
     )
@@ -181,7 +219,7 @@ def native_commands(
             "run",
             str(example),
             *build_args,
-            f"-out:{output_dir / f'example-{index}'}",
+            f"-out:{executable_output_path(output_dir, f'example-{index}')}",
         ]
         for index, example in enumerate(find_examples())
     )
@@ -303,6 +341,23 @@ def run_self_test() -> None:
         raise QualificationError(
             f"cross-check matrix is incomplete: expected {expected_cross_commands}, "
             f"found {actual_cross_commands}"
+        )
+
+    simulated_output_dir = Path("qualification-output")
+    windows_output = executable_output_path(
+        simulated_output_dir,
+        "tests",
+        windows=True,
+    )
+    if windows_output.name != "tests.exe":
+        raise QualificationError(
+            f"Windows qualification output must end in .exe: {windows_output}"
+        )
+    simulated_library = PROJECT_ROOT / "out" / "ci-sqlite" / "sqlite3.lib"
+    windows_import = sqlite_library_import_value(simulated_library, windows=True)
+    if windows_import.startswith("system:") or Path(windows_import).is_absolute():
+        raise QualificationError(
+            f"Windows SQLite import must be package-relative: {windows_import}"
         )
     print(
         "Fail-fast self-test passed: a simulated first-step failure prevented "

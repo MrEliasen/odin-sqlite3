@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import re
 import shutil
@@ -1482,13 +1483,26 @@ def verify_optional_link(library: Path, feature_profile: str) -> None:
             odin_optional_link_probe_source(enabled_feature_gates),
             encoding="utf-8",
         )
+        if os.name == "nt":
+            try:
+                library_import = Path(
+                    os.path.relpath(library.resolve(), start=RAW_GENERATED.parent)
+                ).as_posix()
+            except ValueError:
+                fail(
+                    "on Windows, the SQLite library must be on the same drive "
+                    f"as the generated binding: {library.resolve()}"
+                )
+        else:
+            library_import = f"system:{library.resolve().as_posix()}"
+
         command = [
             odin,
             "run",
             str(temp_dir),
             f"-collection:project={PROJECT_ROOT}",
             *(f"-define:SQLITE_{gate}=true" for gate in enabled_feature_gates),
-            f"-define:SQLITE_LIB=system:{library.resolve().as_posix()}",
+            f"-define:SQLITE_LIB={library_import}",
             "-o:none",
         ]
         output = run_checked(command, cwd=PROJECT_ROOT)

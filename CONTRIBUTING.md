@@ -105,7 +105,8 @@ load through Odin; it does not functionally invoke those APIs. The same probe
 can be run locally:
 
 ```sh
-python3 ci/build_sqlite.py --output out/ci-sqlite
+python3 ci/build_sqlite.py --output out/ci-sqlite \
+  --header-output input/sqlite3.h
 make verify-optional-link \
   QUALIFICATION_SQLITE_LIBRARY=out/ci-sqlite/libsqlite3.a \
   SQLITE_FEATURE_PROFILE=all

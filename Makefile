@@ -144,7 +144,9 @@ download-sqlite: $(SQLITE_HEADER)
 .PHONY: build-ci-sqlite
 build-ci-sqlite:
 	@set -eu; \
-	$(PYTHON) ci/build_sqlite.py --output "$(OUT_DIR)/ci-sqlite"
+	$(PYTHON) ci/build_sqlite.py \
+		--output "$(OUT_DIR)/ci-sqlite" \
+		--header-output "$(SQLITE_HEADER)"
 
 .PHONY: generate
 generate: $(BINDGEN_BIN) $(SQLITE_HEADER)
