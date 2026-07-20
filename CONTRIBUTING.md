@@ -47,7 +47,7 @@ not accept an ambient system SQLite as their behavioral oracle. Coverage and
 known missing families are recorded in
 [`tests/features/FEATURE_MATRIX.md`](tests/features/FEATURE_MATRIX.md).
 
-`make test` checks the handwritten package, test package, and every packaged
+`make test` checks the high-level package, test package, and every packaged
 example before executing all 109 tests and all 18 examples. Commands stop on
 the first failure. The test runners and every example execute with Odin's
 tracking allocator; leaked binding/example allocations and invalid frees are
@@ -73,7 +73,7 @@ python ci/qualify.py native --sqlite-library C:/path/to/sqlite3.lib
 make cross-check
 ```
 
-This type-checks both `sqlite/raw/generated` and the handwritten `sqlite`
+This type-checks both `sqlite/raw/generated` and the high-level `sqlite`
 package with the conservative default feature profile and the all-feature
 profile for:
 

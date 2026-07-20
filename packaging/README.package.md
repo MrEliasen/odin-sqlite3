@@ -76,7 +76,7 @@ even when SQLite itself is in serialized mode.
 
 ## Package contents
 
-- `sqlite/` — handwritten wrapper layer plus generated raw bindings
+- `sqlite/` — high-level wrapper layer plus generated raw bindings
 - `LICENSE` — project license
 - `README.md` — top-level project overview
 - `README.package.md` — package-specific consumption notes

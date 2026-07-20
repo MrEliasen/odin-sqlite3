@@ -1,6 +1,6 @@
 package sqlite
 
-// Handwritten wrapper package.
+// High-level SQLite wrapper package.
 //
 // Generated raw bindings live under:
 //   sqlite/raw/generated
