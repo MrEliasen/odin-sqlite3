@@ -92,12 +92,57 @@ jobs:
           path: out/odin-sqlite-package-macos-arm64.zip
           retention-days: 14
 
+  package-windows:
+    name: Package Windows
+    needs: qualification
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Setup Odin
+        uses: laytan/setup-odin@8536d8fa450ec6f1bd9ddc84bbaaf16296c0051d # v2.12.2
+        with:
+          token: ${{ github.token }}
+          release: ${{ env.ODIN_VERSION }}
+
+      - name: Install pinned GNU Make
+        shell: pwsh
+        run: choco install make --version=4.4.1 --yes --no-progress
+
+      - name: Download qualified raw bindings
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: sqlite-raw-generated
+          path: sqlite/raw/generated
+
+      - name: Build and check Windows package
+        shell: bash
+        run: make SHELL=bash package-check
+
+      - name: Create Windows release asset
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path out/odin-sqlite-package `
+            -DestinationPath out/odin-sqlite-package-windows-x86_64.zip `
+            -CompressionLevel Optimal
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@b7c566a772e6b6fb58ed0dc250532a479d7789f # v6
+        with:
+          name: odin-sqlite-package-windows-x86_64
+          path: out/odin-sqlite-package-windows-x86_64.zip
+          retention-days: 14
+
   release:
     name: Publish Release
     runs-on: ubuntu-24.04
     needs:
       - package-linux
       - package-macos
+      - package-windows
     if: startsWith(github.ref, 'refs/tags/')
 
     steps:
@@ -116,12 +161,19 @@ jobs:
           name: odin-sqlite-package-macos-arm64
           path: out
 
+      - name: Download Windows artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: odin-sqlite-package-windows-x86_64
+          path: out
+
       - name: Create Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             out/odin-sqlite-package-linux-x86_64.zip
             out/odin-sqlite-package-macos-arm64.zip
+            out/odin-sqlite-package-windows-x86_64.zip
           generate_release_notes: true
 
       - name: Move latest tag to this release commit
