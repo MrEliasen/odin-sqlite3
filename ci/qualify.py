@@ -19,7 +19,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RAW_PACKAGE = PROJECT_ROOT / "sqlite" / "raw" / "generated"
 WRAPPER_PACKAGE = PROJECT_ROOT / "sqlite"
 TEST_PACKAGE = PROJECT_ROOT / "tests"
+FEATURE_TEST_ROOT = TEST_PACKAGE / "features"
+FEATURE_CONTRACT_CHECKER = PROJECT_ROOT / "ci" / "check_feature_test_contracts.py"
 EXAMPLES_ROOT = PROJECT_ROOT / "packaging" / "examples"
+EXAMPLE_MEMORY_CHECKER = PROJECT_ROOT / "ci" / "check_example_memory_harness.py"
+
+ALL_FEATURE_TEST_PACKAGES = (
+    FEATURE_TEST_ROOT / "sql_language",
+    FEATURE_TEST_ROOT / "engine_runtime",
+    FEATURE_TEST_ROOT / "optional_extensions",
+)
 
 CROSS_TARGETS = (
     "darwin_amd64",
@@ -88,6 +97,23 @@ def find_examples() -> list[Path]:
     return examples
 
 
+def feature_test_packages(profile: str) -> tuple[Path, ...]:
+    # Feature contracts intentionally require the pinned all-feature SQLite
+    # profile. Running them against an arbitrary system library would make the
+    # environment, rather than SQLite's pinned contract, define expectations.
+    if profile != "all":
+        return ()
+    missing = [
+        path
+        for path in ALL_FEATURE_TEST_PACKAGES
+        if not path.is_dir() or not any(path.glob("*.odin"))
+    ]
+    if missing:
+        rendered = ", ".join(str(path) for path in missing)
+        raise QualificationError(f"SQLite feature-test packages are missing: {rendered}")
+    return ALL_FEATURE_TEST_PACKAGES
+
+
 def feature_arguments(profile: str) -> list[str]:
     if profile == "default":
         return []
@@ -120,16 +146,34 @@ def native_commands(
     if sanitizer is not None:
         build_args.append(f"-sanitize:{sanitizer}")
 
+    feature_packages = feature_test_packages(feature_profile)
+
     commands: list[list[str]] = [
+        [sys.executable, str(FEATURE_CONTRACT_CHECKER)],
+        [sys.executable, str(EXAMPLE_MEMORY_CHECKER)],
         [odin, "check", str(WRAPPER_PACKAGE), "-no-entry-point", *feature_args, *library_args],
         [odin, "check", str(TEST_PACKAGE), *feature_args, *library_args],
     ]
+    commands.extend(
+        [odin, "check", str(package), *feature_args, *library_args]
+        for package in feature_packages
+    )
     commands.extend(
         [odin, "check", str(example), *feature_args, *library_args]
         for example in find_examples()
     )
     commands.append(
         [odin, "run", str(TEST_PACKAGE), *build_args, f"-out:{output_dir / 'tests'}"]
+    )
+    commands.extend(
+        [
+            odin,
+            "run",
+            str(package),
+            *build_args,
+            f"-out:{output_dir / f'feature-{package.name}'}",
+        ]
+        for package in feature_packages
     )
     commands.extend(
         [

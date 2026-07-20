@@ -5,6 +5,12 @@ ODIN ?= odin
 QUALIFICATION_SQLITE_LIBRARY ?=
 SQLITE_FEATURE_PROFILE ?= default
 
+ifeq ($(OS),Windows_NT)
+PINNED_SQLITE_LIBRARY = $(OUT_DIR)/ci-sqlite/sqlite3.lib
+else
+PINNED_SQLITE_LIBRARY = $(OUT_DIR)/ci-sqlite/libsqlite3.a
+endif
+
 DEPS_DIR := deps
 DEPS_BIN_DIR := $(DEPS_DIR)/bin
 BINDGEN_DIR := $(DEPS_DIR)/odin-c-bindgen
@@ -40,9 +46,13 @@ help:
 	@echo "  clean-deps          Remove deps/"
 	@echo "  clean               Remove generated, out, and deps"
 	@echo "  test                Run all checks, tests, and examples natively"
+	@echo "  test-features       Build pinned SQLite and run all SQLite feature contracts"
 	@echo "  cross-check         Compile-only raw/wrapper checks for 64-bit macOS/Linux/Windows"
 	@echo "  test-sanitize       Run all tests and examples natively under AddressSanitizer"
+	@echo "  test-features-sanitize  Run all SQLite feature contracts under AddressSanitizer"
 	@echo "  test-orchestration  Negative self-test for fail-fast qualification"
+	@echo "  check-feature-contracts  Enforce SQLite feature-test methodology comments"
+	@echo "  check-example-memory  Enforce the fail-closed example allocator harness"
 	@echo "  verify-optional-link  Run optional-symbol link/reference probe (requires QUALIFICATION_SQLITE_LIBRARY)"
 
 .PHONY: install-build-deps
@@ -224,6 +234,30 @@ test:
 	$(PYTHON) ci/qualify.py --odin "$(ODIN)" native \
 		$(if $(strip $(QUALIFICATION_SQLITE_LIBRARY)),--sqlite-library "$(QUALIFICATION_SQLITE_LIBRARY)") \
 		--feature-profile "$(SQLITE_FEATURE_PROFILE)"
+
+.PHONY: check-feature-contracts
+check-feature-contracts:
+	@set -eu; \
+	$(PYTHON) ci/check_feature_test_contracts.py
+
+.PHONY: check-example-memory
+check-example-memory:
+	@set -eu; \
+	$(PYTHON) ci/check_example_memory_harness.py
+
+.PHONY: test-features
+test-features: build-ci-sqlite
+	@set -eu; \
+	$(PYTHON) ci/qualify.py --odin "$(ODIN)" native \
+		--sqlite-library "$(PINNED_SQLITE_LIBRARY)" \
+		--feature-profile all
+
+.PHONY: test-features-sanitize
+test-features-sanitize: build-ci-sqlite
+	@set -eu; \
+	$(PYTHON) ci/qualify.py --odin "$(ODIN)" sanitize \
+		--sqlite-library "$(PINNED_SQLITE_LIBRARY)" \
+		--feature-profile all
 
 .PHONY: cross-check
 cross-check:

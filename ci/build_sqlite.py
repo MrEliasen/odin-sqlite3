@@ -36,6 +36,8 @@ SQLITE_FEATURE_DEFINES = (
     "SQLITE_ENABLE_UNLOCK_NOTIFY=1",
     "SQLITE_ENABLE_STMT_SCANSTATUS=1",
     "SQLITE_ENABLE_SNAPSHOT=1",
+    "SQLITE_ENABLE_FTS5=1",
+    "SQLITE_ENABLE_RTREE=1",
     "SQLITE_THREADSAFE=1",
 )
 
@@ -222,7 +224,8 @@ def main() -> int:
     print(f"SQLite qualification library: {library.resolve()}", flush=True)
     print(
         "Enabled SQLite feature profile: normalize, preupdate, session, "
-        "column metadata, unlock-notify, statement scan-status, snapshot",
+        "column metadata, unlock-notify, statement scan-status, snapshot, "
+        "FTS5, R-Tree",
         flush=True,
     )
     return 0

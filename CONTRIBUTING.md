@@ -1,9 +1,18 @@
 # Contributing and qualification
 
-The authoritative build matrix is `.github/workflows/ci.yml`. It uses Odin
-`dev-2026-05` and a checksum-pinned SQLite 3.53.1 source archive. A release tag
-calls that workflow first, so packaging and publication cannot start until the
-qualification matrix passes.
+## SQLite feature-test policy
+
+Before creating, editing, reviewing, or triaging tests below `tests/features`,
+read [`tests/SQLITE_FEATURE_TESTING.md`](tests/SQLITE_FEATURE_TESTING.md) in
+full. Those tests use SQLite's documented behavior as their oracle and must not
+be changed to accommodate the binding implementation. Every feature test needs
+the mandatory contract comment defined by that methodology; CI enforces it
+with `python3 ci/check_feature_test_contracts.py`.
+
+The authoritative build matrix is `.github/workflows/ci.yml`. It uses Python
+3.13.14, Odin `dev-2026-05`, and a checksum-pinned SQLite 3.53.1 source archive.
+A release tag calls that workflow first, so packaging and publication cannot
+start until the qualification matrix passes.
 
 ## Local commands
 
@@ -23,9 +32,29 @@ binding (the system linker default unless overridden):
 make test
 ```
 
+Run the black-box SQLite feature contracts against the checksum-pinned
+all-feature SQLite build with:
+
+```sh
+make test-features
+make test-features-sanitize
+```
+
+These commands execute the existing wrapper suite, all examples, and the
+SQL-language, engine-runtime, and optional/extensions contract packages. The
+feature contracts deliberately require the pinned all-feature profile; they do
+not accept an ambient system SQLite as their behavioral oracle. Coverage and
+known missing families are recorded in
+[`tests/features/FEATURE_MATRIX.md`](tests/features/FEATURE_MATRIX.md).
+
 `make test` checks the handwritten package, test package, and every packaged
 example before executing all 109 tests and all 18 examples. Commands stop on
-the first failure. To use an exact library instead of the system default:
+the first failure. The test runners and every example execute with Odin's
+tracking allocator; leaked binding/example allocations and invalid frees are
+fatal. `python3 ci/check_example_memory_harness.py` prevents new examples from
+bypassing the shared fail-closed harness. AddressSanitizer/LeakSanitizer remains
+the complementary native-memory gate. To use an exact library instead of the
+system default:
 
 ```sh
 make test QUALIFICATION_SQLITE_LIBRARY=/absolute/path/to/libsqlite3.a
@@ -68,7 +97,8 @@ library was built with its matching SQLite option:
 - `SQLITE_HAS_STMT_SCANSTATUS_API`
 - `SQLITE_HAS_SNAPSHOT_API`
 
-CI builds a static SQLite with all seven feature families from the pinned
+CI builds a static SQLite with all seven gated C-API families plus FTS5 and
+R-Tree from the pinned
 source, then runs a probe that strongly references all 81 gated symbols and
 checks that every loaded address is non-null. This proves the symbols link and
 load through Odin; it does not functionally invoke those APIs. The same probe
