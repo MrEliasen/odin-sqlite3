@@ -595,3 +595,99 @@ test_savepoint_helper_returns_body_error_after_auto_rollback :: proc() {
 		expect_only_seed_row(test_db.db, "nested db_with_savepoint + RAISE(ROLLBACK)")
 	}
 }
+
+// sqlite3_reset repeats the error of the statement's previous execution. A
+// cached statement whose last use failed must still be handed out reset and
+// with its bindings cleared; the stale error belongs to the previous caller.
+test_cache_hit_after_failed_step_is_reset_and_cleared :: proc() {
+	test_db := test_db_open("cache_hit_after_failed_step")
+	defer test_db_close(&test_db)
+
+	exec_ok(test_db.db, "CREATE TABLE cache_fail(id INTEGER PRIMARY KEY, v TEXT UNIQUE)")
+	exec_ok(test_db.db, "INSERT INTO cache_fail(v) VALUES ('dup')")
+
+	cache := sqlite.cache_init()
+	defer sqlite.cache_destroy_cleanup(&cache)
+
+	sql :: "INSERT INTO cache_fail(v) VALUES (?1)"
+	stmt, err, ok := sqlite.db_prepare_cached(test_db.db, &cache, sql)
+	expect_no_error(err, ok, "first cached prepare should succeed")
+	bind_err, bind_ok := sqlite.stmt_bind_text(stmt, 1, "dup")
+	expect_no_error(bind_err, bind_ok, "binding the duplicate value should succeed")
+	_, step_err, step_ok := sqlite.stmt_step(stmt^)
+	expect_error(&step_err, step_ok, int(raw.CONSTRAINT), "duplicate insert should fail with CONSTRAINT")
+
+	// The caller does not reset; the next request must not inherit the failure.
+	stmt2, err2, ok2 := sqlite.db_prepare_cached(test_db.db, &cache, sql)
+	expect_no_error(err2, ok2, "cache hit after a failed step must not repeat the previous caller's error")
+	expect_true(stmt2 == stmt, "cache hit should return the same cached statement")
+	expanded := sqlite.stmt_expanded_sql(stmt2^, context.temp_allocator)
+	expect_eq(expanded, "INSERT INTO cache_fail(v) VALUES (NULL)", "cache hit must clear the failed execution's bindings")
+
+	bind_err, bind_ok = sqlite.stmt_bind_text(stmt2, 1, "fresh")
+	expect_no_error(bind_err, bind_ok, "rebinding the cached statement should succeed")
+	_, step_err, step_ok = sqlite.stmt_step(stmt2^)
+	expect_no_error(step_err, step_ok, "cached statement should run normally after the failed use")
+
+	count, count_err, count_ok := sqlite.db_scalar_i64(test_db.db, "SELECT COUNT(*) FROM cache_fail")
+	expect_no_error(count_err, count_ok, "count should succeed")
+	expect_eq(count, i64(2), "seed row and the fresh insert should be present")
+}
+
+// Resetting a statement that is still running can do new work: halting a
+// partly consumed autocommit INSERT ... RETURNING commits it, and a deferred
+// foreign-key failure is only reported by that reset. It must not be hidden.
+test_cache_hit_reports_failure_from_resetting_running_stmt :: proc() {
+	test_db := test_db_open("cache_hit_running_stmt_reset_failure")
+	defer test_db_close(&test_db)
+
+	exec_ok(test_db.db, "PRAGMA foreign_keys = ON")
+	exec_ok(test_db.db, "CREATE TABLE cache_parent(id INTEGER PRIMARY KEY)")
+	exec_ok(test_db.db, "CREATE TABLE cache_child(id INTEGER PRIMARY KEY, pid INTEGER REFERENCES cache_parent(id) DEFERRABLE INITIALLY DEFERRED)")
+
+	cache := sqlite.cache_init()
+	defer sqlite.cache_destroy_cleanup(&cache)
+
+	sql :: "INSERT INTO cache_child(pid) VALUES (?1) RETURNING id"
+	stmt, err, ok := sqlite.db_prepare_cached(test_db.db, &cache, sql)
+	expect_no_error(err, ok, "first cached prepare should succeed")
+	bind_err, bind_ok := sqlite.stmt_bind_i64(stmt, 1, 42)
+	expect_no_error(bind_err, bind_ok, "binding a missing parent id should succeed")
+	has_row, step_err, step_ok := sqlite.stmt_next(stmt^)
+	expect_no_error(step_err, step_ok, "RETURNING should produce its row before the deferred check")
+	expect_true(has_row, "RETURNING should produce a row")
+
+	_, err2, ok2 := sqlite.db_prepare_cached(test_db.db, &cache, sql)
+	expect_error(&err2, ok2, int(raw.CONSTRAINT), "resetting the running statement fails the deferred foreign key and must be reported")
+
+	count, count_err, count_ok := sqlite.db_scalar_i64(test_db.db, "SELECT COUNT(*) FROM cache_child")
+	expect_no_error(count_err, count_ok, "count should succeed")
+	expect_eq(count, i64(0), "the failed deferred-FK write should have been rolled back")
+}
+
+test_stmt_reuse_clears_bindings_even_when_reporting_previous_error :: proc() {
+	test_db := test_db_open("stmt_reuse_clears_after_error")
+	defer test_db_close(&test_db)
+
+	stmt := prepare_ok(test_db.db, "SELECT ?1 AS a, abs(?2) AS b")
+	defer finalize_ok(&stmt)
+
+	bind_err, bind_ok := sqlite.stmt_bind_text(&stmt, 1, "STALE")
+	expect_no_error(bind_err, bind_ok, "binding ?1 should succeed")
+	bind_err, bind_ok = sqlite.stmt_bind_i64(&stmt, 2, min(i64))
+	expect_no_error(bind_err, bind_ok, "binding ?2 should succeed")
+	_, step_err, step_ok := sqlite.stmt_step(stmt)
+	expect_error(&step_err, step_ok, int(raw.ERROR), "abs(min(i64)) should fail with integer overflow")
+
+	reuse_err, reuse_ok := sqlite.stmt_reuse(&stmt)
+	expect_error(&reuse_err, reuse_ok, int(raw.ERROR), "stmt_reuse should still report the previous execution's error like sqlite3_reset")
+	expect_eq(sqlite.stmt_expanded_sql(stmt, context.temp_allocator), "SELECT NULL AS a, abs(NULL) AS b", "stmt_reuse must clear bindings even when it reports the previous error")
+
+	bind_err, bind_ok = sqlite.stmt_bind_i64(&stmt, 2, -5)
+	expect_no_error(bind_err, bind_ok, "rebinding only ?2 should succeed")
+	has_row, next_err, next_ok := sqlite.stmt_next(stmt)
+	expect_no_error(next_err, next_ok, "statement should run after stmt_reuse")
+	expect_true(has_row, "statement should return a row")
+	expect_true(sqlite.stmt_is_null(stmt, 0), "the failed execution's ?1 value must not leak into the next execution")
+	expect_eq(sqlite.stmt_get_i64(stmt, 1), i64(5), "the new ?2 value should be used")
+}

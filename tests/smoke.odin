@@ -79,6 +79,9 @@ run_transaction_tests :: proc() {
 	run_test("cache_prepare_reuse_and_clear", test_cache_prepare_reuse_and_clear)
 	run_test("cache_usage_tracking_and_prune_unused", test_cache_usage_tracking_and_prune_unused)
 	run_test("cache_is_connection_and_prepare_flags_safe", test_cache_is_connection_and_prepare_flags_safe)
+	run_test("cache_hit_after_failed_step_is_reset_and_cleared", test_cache_hit_after_failed_step_is_reset_and_cleared)
+	run_test("cache_hit_reports_failure_from_resetting_running_stmt", test_cache_hit_reports_failure_from_resetting_running_stmt)
+	run_test("stmt_reuse_clears_bindings_even_when_reporting_previous_error", test_stmt_reuse_clears_bindings_even_when_reporting_previous_error)
 	run_test("operational_busy_timeout_and_wal_checkpoint", test_operational_busy_timeout_and_wal_checkpoint)
 	run_test("operational_stmt_consume_done_and_with_stmt", test_operational_stmt_consume_done_and_with_stmt)
 }

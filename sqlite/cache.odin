@@ -265,9 +265,23 @@ db_prepare_cached :: proc(
 	}
 
 	if stmt_ptr, ok := cache_get(cache, sql, flags); ok {
-		err, reuse_ok := stmt_reuse(stmt_ptr)
-		if !reuse_ok {
-			return nil, err, false
+		// sqlite3_reset always resets, but it also repeats the result of the
+		// statement's previous execution. If that execution had finished (DONE
+		// or a failed step), sqlite3_step already reported the error to the
+		// previous user, so it must not fail this request. Resetting a statement
+		// that is still running can do new work: halting it may commit an
+		// autocommit write (e.g. a partly consumed INSERT ... RETURNING), and
+		// that failure is reported only here, so it is still returned.
+		was_running := raw.stmt_busy(stmt_ptr.handle) != 0
+		reset_err, reset_ok := stmt_reset(stmt_ptr)
+		clear_err, clear_ok := stmt_clear_bindings(stmt_ptr)
+		if !reset_ok && was_running {
+			error_destroy(&clear_err)
+			return nil, reset_err, false
+		}
+		error_destroy(&reset_err)
+		if !clear_ok {
+			return nil, clear_err, false
 		}
 		return stmt_ptr, error_none(), true
 	}

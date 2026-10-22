@@ -197,15 +197,23 @@ stmt_ensure_reset :: proc(stmt: ^Stmt) -> (Error, bool) {
 	return stmt_reset(stmt)
 }
 
+// stmt_reuse resets `stmt` and clears its bindings. Like sqlite3_reset, it
+// returns the error of the statement's previous execution if that execution
+// failed; the statement is still reset and its bindings cleared, so values
+// from the failed execution cannot leak into the next one.
 stmt_reuse :: proc(stmt: ^Stmt) -> (Error, bool) {
-	err, ok := stmt_reset(stmt)
-	if !ok {
-		return err, false
+	reset_err, reset_ok := stmt_reset(stmt)
+	if stmt == nil || stmt.handle == nil {
+		return reset_err, reset_ok
 	}
 
-	err, ok = stmt_clear_bindings(stmt)
-	if !ok {
-		return err, false
+	clear_err, clear_ok := stmt_clear_bindings(stmt)
+	if !reset_ok {
+		error_destroy(&clear_err)
+		return reset_err, false
+	}
+	if !clear_ok {
+		return clear_err, false
 	}
 
 	return error_none(), true
