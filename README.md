@@ -27,7 +27,7 @@ The high-level wrapper covers:
 - struct mapping and typed one/optional/all-row helpers.
 
 Raw coverage does not mean every function has a high-level helper or a complete
-behavioral test. The pinned suite runs 109 wrapper tests, 42 adversarial SQLite
+behavioral test. The pinned suite runs 138 wrapper tests, 42 adversarial SQLite
 contracts, and 18 executable examples. Exact coverage lives in the
 [feature matrix](tests/features/FEATURE_MATRIX.md).
 

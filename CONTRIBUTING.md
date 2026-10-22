@@ -48,7 +48,7 @@ known missing families are recorded in
 [`tests/features/FEATURE_MATRIX.md`](tests/features/FEATURE_MATRIX.md).
 
 `make test` checks the high-level package, test package, and every packaged
-example before executing all 109 tests and all 18 examples. Commands stop on
+example before executing all 138 tests and all 18 examples. Commands stop on
 the first failure. The test runners and every example execute with Odin's
 tracking allocator; leaked binding/example allocations and invalid frees are
 fatal. `python3 ci/check_example_memory_harness.py` prevents new examples from
