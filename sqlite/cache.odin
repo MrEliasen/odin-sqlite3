@@ -1,12 +1,29 @@
 package sqlite
 
+import "base:runtime"
 import "core:strings"
 import raw "raw/generated"
 
-cache_init :: proc() -> Stmt_Cache {
+// cache_init creates an empty cache whose map, entry nodes, and
+// db_prepare_cached statements are owned by `allocator`.
+cache_init :: proc(allocator := context.allocator) -> Stmt_Cache {
 	return Stmt_Cache{
-		entries = make(map[Stmt_Cache_Key]^Cache_Entry),
+		entries   = make(map[Stmt_Cache_Key]^Cache_Entry, allocator),
+		allocator = allocator,
 	}
+}
+
+// cache_owner_allocator returns the cache's allocator, capturing
+// context.allocator on first use of a zero-value cache.
+@(private)
+cache_owner_allocator :: proc(cache: ^Stmt_Cache) -> runtime.Allocator {
+	if cache.allocator.procedure == nil {
+		cache.allocator = context.allocator
+		if cap(cache.entries) == 0 {
+			cache.entries = make(map[Stmt_Cache_Key]^Cache_Entry, cache.allocator)
+		}
+	}
+	return cache.allocator
 }
 
 @(private)
@@ -37,16 +54,17 @@ cache_destroy_entry :: proc(cache: ^Stmt_Cache, key: Stmt_Cache_Key, entry_ptr: 
 		return error_none(), true
 	}
 
+	allocator := owner_allocator(cache.allocator)
 	finalize_err := error_none()
 	finalize_ok := true
 	if entry_ptr.stmt != nil {
 		fe, fo := stmt_finalize(entry_ptr.stmt)
 		finalize_err = fe
 		finalize_ok = fo
-		free(entry_ptr.stmt)
+		free(entry_ptr.stmt, allocator)
 	}
 
-	free(entry_ptr)
+	free(entry_ptr, allocator)
 	if len(cache.entries) == 0 {
 		cache.db = nil
 	}
@@ -61,7 +79,9 @@ cache_destroy :: proc(cache: ^Stmt_Cache) -> (Error, bool) {
 
 	err, ok := cache_clear(cache)
 	delete(cache.entries)
+	cache.entries = nil
 	cache.db = nil
+	cache.allocator = {}
 	return err, ok
 }
 
@@ -118,6 +138,7 @@ cache_put :: proc(cache: ^Stmt_Cache, stmt: ^Stmt) -> (Error, bool) {
 		return error_make(int(raw.MISUSE), "sqlite: one statement cache cannot contain statements from multiple database handles"), false
 	}
 
+	allocator := cache_owner_allocator(cache)
 	key := cache_key(stmt.sql, stmt.prepare_flags)
 
 	if old_ptr, exists := cache.entries[key]; exists && old_ptr != nil {
@@ -127,26 +148,46 @@ cache_put :: proc(cache: ^Stmt_Cache, stmt: ^Stmt) -> (Error, bool) {
 		}
 	}
 
+	// The statement keeps its own allocator for its SQL text and bindings.
 	if !stmt.owned_sql {
-		stmt.sql = strings.clone(stmt.sql)
+		sql_copy, sql_err := strings.clone(stmt.sql, owner_allocator(stmt.allocator))
+		if sql_err != nil {
+			return error_alloc("cache_put", sql_err), false
+		}
+		stmt.sql = sql_copy
 		stmt.owned_sql = true
 	}
 
-	stored_stmt := new(Stmt)
+	stored_stmt, stmt_err := new(Stmt, allocator)
+	if stmt_err != nil {
+		return error_alloc("cache_put", stmt_err), false
+	}
+	entry_ptr, entry_err := new(Cache_Entry, allocator)
+	if entry_err != nil {
+		free(stored_stmt, allocator)
+		return error_alloc("cache_put", entry_err), false
+	}
 	stored_stmt^ = stmt^
+
+	// Reserve the map slot before consuming the caller's statement.
+	_, slot, _, slot_err := map_entry(&cache.entries, cache_key(stored_stmt.sql, stored_stmt.prepare_flags))
+	if slot_err != nil {
+		free(entry_ptr, allocator)
+		free(stored_stmt, allocator)
+		return error_alloc("cache_put", slot_err), false
+	}
 
 	// Consume caller's stmt so they cannot double-finalize the same handle or
 	// alias the bound-storage dynamic arrays.
 	stmt^ = Stmt{}
 
-	entry_ptr := new(Cache_Entry)
 	entry_ptr^ = Cache_Entry{
 		stmt = stored_stmt,
 		used = true,
 	}
 
 	cache.db = stored_stmt.db
-	cache.entries[cache_key(stored_stmt.sql, stored_stmt.prepare_flags)] = entry_ptr
+	slot^ = entry_ptr
 	return error_none(), true
 }
 
@@ -286,7 +327,9 @@ db_prepare_cached :: proc(
 		return stmt_ptr, error_none(), true
 	}
 
-	stmt, err, ok := stmt_prepare(db, sql, flags)
+	// Cached statements live as long as the cache, so they must not take
+	// their storage from a shorter-lived context.allocator.
+	stmt, err, ok := stmt_prepare(db, sql, flags, cache_owner_allocator(cache))
 	if !ok {
 		return nil, err, false
 	}

@@ -1,5 +1,6 @@
 package sqlite
 
+import "base:runtime"
 import "core:fmt"
 import "core:strings"
 import raw "raw/generated"
@@ -50,6 +51,7 @@ backup_init :: proc(
 	src_db: DB,
 	dst_schema: string = "main",
 	src_schema: string = "main",
+	allocator := context.allocator,
 ) -> (Backup, Error, bool) {
 	if dst_db.handle == nil || src_db.handle == nil {
 		err := error_from_db(DB{}, int(raw.MISUSE))
@@ -64,11 +66,15 @@ backup_init :: proc(
 		return Backup{}, err, false
 	}
 
-	c_dst_schema := strings.clone_to_cstring(dst_schema)
+	c_dst_schema, dst_err := strings.clone_to_cstring(dst_schema)
 	defer delete(c_dst_schema)
-
-	c_src_schema := strings.clone_to_cstring(src_schema)
+	c_src_schema, src_err := strings.clone_to_cstring(src_schema)
 	defer delete(c_src_schema)
+	for alloc_err in ([2]runtime.Allocator_Error{dst_err, src_err}) {
+		if alloc_err != nil {
+			return Backup{}, error_alloc("backup_init", alloc_err), false
+		}
+	}
 
 	handle := raw.backup_init(dst_db.handle, c_dst_schema, src_db.handle, c_src_schema)
 	if handle == nil {
@@ -85,10 +91,11 @@ backup_init :: proc(
 		handle           = handle,
 		src_db           = src_db.handle,
 		dst_db           = dst_db.handle,
-		src_schema_name  = strings.clone(src_schema),
-		dst_schema_name  = strings.clone(dst_schema),
+		src_schema_name  = strings.clone(src_schema, allocator),
+		dst_schema_name  = strings.clone(dst_schema, allocator),
 		owned_src_schema = true,
 		owned_dst_schema = true,
+		allocator        = allocator,
 	}
 
 	return backup, error_none(), true
@@ -145,11 +152,12 @@ backup_finish :: proc(backup: ^Backup) -> (Error, bool) {
 
 	backup.handle = nil
 
+	allocator := owner_allocator(backup.allocator)
 	if backup.owned_src_schema && backup.src_schema_name != "" {
-		delete(backup.src_schema_name)
+		delete(backup.src_schema_name, allocator)
 	}
 	if backup.owned_dst_schema && backup.dst_schema_name != "" {
-		delete(backup.dst_schema_name)
+		delete(backup.dst_schema_name, allocator)
 	}
 
 	backup.src_schema_name = ""
@@ -158,6 +166,7 @@ backup_finish :: proc(backup: ^Backup) -> (Error, bool) {
 	backup.owned_dst_schema = false
 	backup.src_db = nil
 	backup.dst_db = nil
+	backup.allocator = {}
 
 	return finish_err, finish_ok
 }

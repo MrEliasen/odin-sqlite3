@@ -1,5 +1,6 @@
 package sqlite
 
+import "base:runtime"
 import "core:fmt"
 import "core:strings"
 import raw "raw/generated"
@@ -25,6 +26,7 @@ blob_open :: proc(
 	column: string,
 	rowid: i64,
 	flags: Blob_Open_Flags = .ReadOnly,
+	allocator := context.allocator,
 ) -> (Blob, Error, bool) {
 	if db.handle == nil {
 		err := error_from_db(db, int(raw.MISUSE))
@@ -38,22 +40,28 @@ blob_open :: proc(
 		return Blob{}, err, false
 	}
 
-	c_schema := strings.clone_to_cstring(schema)
+	// sqlite3_blob_open dereferences a nil table/column name (no API armor).
+	c_schema, schema_err := strings.clone_to_cstring(schema)
 	defer delete(c_schema)
-
-	c_table := strings.clone_to_cstring(table)
+	c_table, table_err := strings.clone_to_cstring(table)
 	defer delete(c_table)
-
-	c_column := strings.clone_to_cstring(column)
+	c_column, column_err := strings.clone_to_cstring(column)
 	defer delete(c_column)
+	for alloc_err in ([3]runtime.Allocator_Error{schema_err, table_err, column_err}) {
+		if alloc_err != nil {
+			return Blob{}, error_alloc("blob_open", alloc_err), false
+		}
+	}
 
+	// Name clones are diagnostics only; an allocation failure leaves them empty.
 	blob := Blob{
 		db          = db.handle,
-		schema_name = strings.clone(schema),
-		table_name  = strings.clone(table),
-		column_name = strings.clone(column),
+		schema_name = strings.clone(schema, allocator),
+		table_name  = strings.clone(table, allocator),
+		column_name = strings.clone(column, allocator),
 		rowid       = rowid,
 		writeable   = flags == .ReadWrite,
+		allocator   = allocator,
 	}
 
 	rc := raw.blob_open(
@@ -66,9 +74,9 @@ blob_open :: proc(
 		&blob.handle,
 	)
 	if rc != raw.OK {
-		delete(blob.schema_name)
-		delete(blob.table_name)
-		delete(blob.column_name)
+		delete(blob.schema_name, allocator)
+		delete(blob.table_name, allocator)
+		delete(blob.column_name, allocator)
 
 		err := error_from_db(db, int(rc))
 		error_with_op(&err, "blob_open")
@@ -80,9 +88,9 @@ blob_open :: proc(
 	}
 
 	if blob.handle == nil {
-		delete(blob.schema_name)
-		delete(blob.table_name)
-		delete(blob.column_name)
+		delete(blob.schema_name, allocator)
+		delete(blob.table_name, allocator)
+		delete(blob.column_name, allocator)
 
 		err := error_from_db(db, int(raw.ERROR))
 		error_with_op(&err, "blob_open")
@@ -114,9 +122,10 @@ blob_close :: proc(blob: ^Blob) -> (Error, bool) {
 		error_with_op(&close_err, "blob_close")
 	}
 
-	delete(blob.schema_name)
-	delete(blob.table_name)
-	delete(blob.column_name)
+	allocator := owner_allocator(blob.allocator)
+	delete(blob.schema_name, allocator)
+	delete(blob.table_name, allocator)
+	delete(blob.column_name, allocator)
 
 	blob.handle = nil
 	blob.db = nil
@@ -125,6 +134,7 @@ blob_close :: proc(blob: ^Blob) -> (Error, bool) {
 	blob.column_name = ""
 	blob.rowid = 0
 	blob.writeable = false
+	blob.allocator = {}
 
 	return close_err, close_ok
 }
@@ -209,7 +219,10 @@ blob_read_all :: proc(blob: Blob, allocator := context.allocator) -> ([]u8, Erro
 		return []u8{}, error_none(), true
 	}
 
-	out := make([]u8, size, allocator)
+	out, alloc_err := make([]u8, size, allocator)
+	if alloc_err != nil {
+		return nil, error_alloc("blob_read_all", alloc_err), false
+	}
 	read_n, err, ok := blob_read_into(blob, out, 0)
 	if !ok {
 		delete(out, allocator)

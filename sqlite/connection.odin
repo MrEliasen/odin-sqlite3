@@ -1,5 +1,6 @@
 package sqlite
 
+import "base:runtime"
 import "core:strings"
 import raw "raw/generated"
 
@@ -17,12 +18,22 @@ db_open :: proc(path: string, flags: int = DEFAULT_OPEN_FLAGS, vfs: string = "")
 		return DB{}, err, false
 	}
 
-	c_path := strings.clone_to_cstring(path)
+	// A nil filename makes SQLite open a private temporary database, and a nil
+	// VFS name selects the default VFS, so allocation failure must not reach
+	// sqlite3_open_v2.
+	c_path, path_err := strings.clone_to_cstring(path)
+	if path_err != nil {
+		return DB{}, error_alloc("db_open", path_err), false
+	}
 	defer delete(c_path)
 
 	c_vfs := cstring(nil)
 	if vfs != "" {
-		c_vfs = strings.clone_to_cstring(vfs)
+		vfs_err: runtime.Allocator_Error
+		c_vfs, vfs_err = strings.clone_to_cstring(vfs)
+		if vfs_err != nil {
+			return DB{}, error_alloc("db_open", vfs_err), false
+		}
 	}
 	defer delete(c_vfs)
 

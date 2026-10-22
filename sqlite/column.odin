@@ -1,5 +1,6 @@
 package sqlite
 
+import "base:runtime"
 import raw "raw/generated"
 
 column_index_valid :: proc(index: int) -> bool {
@@ -100,29 +101,41 @@ stmt_get_bool :: proc(stmt: Stmt, index: int) -> bool {
 // Lifetime:
 // - this proc copies SQLite's transient column data before returning
 // - the returned string therefore remains valid independently of later `step/reset/finalize` calls
+//
+// An allocation failure also yields "". Wrapper helpers that return an Error
+// (row mapping, db_scalar_text) report it as SQLITE_NOMEM instead.
 stmt_get_text :: proc(stmt: Stmt, index: int, allocator := context.allocator) -> string {
+	text, _ := stmt_copy_text(stmt, index, allocator)
+	return text
+}
+
+@(private)
+stmt_copy_text :: proc(stmt: Stmt, index: int, allocator: runtime.Allocator) -> (string, runtime.Allocator_Error) {
 	if stmt.handle == nil || !column_index_valid(index) {
-		return ""
+		return "", nil
 	}
 
 	if stmt_is_null(stmt, index) {
-		return ""
+		return "", nil
 	}
 
 	text_ptr := raw.column_text(stmt.handle, i32(index))
 	if text_ptr == nil {
-		return ""
+		return "", nil
 	}
 
 	byte_count := raw.column_bytes(stmt.handle, i32(index))
 	if byte_count <= 0 {
-		return ""
+		return "", nil
 	}
 
 	text_bytes := ([^]u8)(text_ptr)[:byte_count]
-	out := make([]u8, byte_count, allocator)
+	out, alloc_err := make([]u8, byte_count, allocator)
+	if alloc_err != nil {
+		return "", alloc_err
+	}
 	copy(out, text_bytes)
-	return string(out)
+	return string(out), nil
 }
 
 // stmt_get_blob returns a copied blob value for the current row/column using `allocator`.
@@ -135,32 +148,44 @@ stmt_get_text :: proc(stmt: Stmt, index: int, allocator := context.allocator) ->
 // Lifetime:
 // - this proc copies SQLite's transient column data before returning
 // - the returned slice therefore remains valid independently of later `step/reset/finalize` calls
+//
+// An allocation failure also yields nil. Wrapper helpers that return an Error
+// (row mapping) report it as SQLITE_NOMEM instead.
 stmt_get_blob :: proc(stmt: Stmt, index: int, allocator := context.allocator) -> []u8 {
+	blob, _ := stmt_copy_blob(stmt, index, allocator)
+	return blob
+}
+
+@(private)
+stmt_copy_blob :: proc(stmt: Stmt, index: int, allocator: runtime.Allocator) -> ([]u8, runtime.Allocator_Error) {
 	if stmt.handle == nil || !column_index_valid(index) {
-		return nil
+		return nil, nil
 	}
 
 	if stmt_is_null(stmt, index) {
-		return nil
+		return nil, nil
 	}
 
 	blob_ptr := raw.column_blob(stmt.handle, i32(index))
 	byte_count := raw.column_bytes(stmt.handle, i32(index))
 
 	if byte_count < 0 {
-		return nil
+		return nil, nil
 	}
 	if byte_count == 0 {
-		return []u8{}
+		return []u8{}, nil
 	}
 	if blob_ptr == nil {
-		return nil
+		return nil, nil
 	}
 
 	src := ([^]u8)(blob_ptr)[:byte_count]
-	out := make([]u8, byte_count, allocator)
+	out, alloc_err := make([]u8, byte_count, allocator)
+	if alloc_err != nil {
+		return nil, alloc_err
+	}
 	copy(out, src)
-	return out
+	return out, nil
 }
 
 stmt_get_text_bytes :: proc(stmt: Stmt, index: int) -> int {

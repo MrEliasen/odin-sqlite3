@@ -126,6 +126,7 @@ main :: proc() {
 	run_bind_tests()
 	run_transaction_tests()
 	run_error_and_extra_api_tests()
+	run_allocator_tests()
 	run_sql_behavior_tests()
 
 	fmt.println("== all smoke tests passed ==")

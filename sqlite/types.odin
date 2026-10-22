@@ -24,6 +24,11 @@ Stmt :: struct {
 	// `stmt_bind_track_blob` in bind.odin.
 	bound_text_storage: map[i32]cstring,
 	bound_blob_storage: map[i32][]u8,
+	// allocator owns `sql` and the bound text/blob copies above. It is captured
+	// at prepare time so binds and finalize made under a different
+	// context.allocator (e.g. a per-request arena) cannot place statement-owned
+	// memory in a shorter-lived allocator or free it with the wrong one.
+	allocator:          runtime.Allocator,
 }
 
 Blob :: struct {
@@ -34,6 +39,8 @@ Blob :: struct {
 	column_name: string,
 	rowid:       i64,
 	writeable:   bool,
+	// allocator owns the cloned name fields; captured at blob_open.
+	allocator:   runtime.Allocator,
 }
 
 Backup :: struct {
@@ -44,6 +51,8 @@ Backup :: struct {
 	dst_schema_name:   string,
 	owned_src_schema:  bool,
 	owned_dst_schema:  bool,
+	// allocator owns the cloned schema names; captured at backup_init.
+	allocator:         runtime.Allocator,
 }
 
 Step_Result :: enum {
@@ -76,6 +85,10 @@ Stmt_Cache :: struct {
 	// being returned for another handle.
 	db:      ^raw.Sqlite3,
 	entries: map[Stmt_Cache_Key]^Cache_Entry,
+	// allocator owns the entries map, every Cache_Entry/Stmt node, and the
+	// statements db_prepare_cached prepares. Captured by cache_init, or on
+	// first insert for a zero-value cache.
+	allocator: runtime.Allocator,
 }
 
 // Row_Replace_Mode controls what stmt_scan_struct does when a mapped string
@@ -227,4 +240,15 @@ blob_is_valid :: proc(blob: Blob) -> bool {
 
 backup_is_valid :: proc(backup: Backup) -> bool {
 	return backup.handle != nil
+}
+
+// owner_allocator returns the allocator a wrapper object captured when it was
+// created. Zero-value or hand-built objects fall back to context.allocator,
+// which preserves the pre-capture behaviour for them.
+@(private)
+owner_allocator :: proc(captured: runtime.Allocator) -> runtime.Allocator {
+	if captured.procedure == nil {
+		return context.allocator
+	}
+	return captured
 }

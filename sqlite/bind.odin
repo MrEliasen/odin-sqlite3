@@ -1,5 +1,6 @@
 package sqlite
 
+import "base:runtime"
 import "core:fmt"
 import "core:strings"
 import raw "raw/generated"
@@ -38,11 +39,12 @@ stmt_clear_bound_storage :: proc(stmt: ^Stmt) {
 		return
 	}
 
+	allocator := owner_allocator(stmt.allocator)
 	for _, c_value in stmt.bound_text_storage {
-		delete(c_value)
+		delete(c_value, allocator)
 	}
 	for _, blob in stmt.bound_blob_storage {
-		delete(blob)
+		delete(blob, allocator)
 	}
 
 	clear(&stmt.bound_text_storage)
@@ -52,7 +54,7 @@ stmt_clear_bound_storage :: proc(stmt: ^Stmt) {
 @(private)
 stmt_release_text_slot :: proc(stmt: ^Stmt, index: i32) {
 	if existing, ok := stmt.bound_text_storage[index]; ok {
-		delete(existing)
+		delete(existing, owner_allocator(stmt.allocator))
 		delete_key(&stmt.bound_text_storage, index)
 	}
 }
@@ -60,7 +62,7 @@ stmt_release_text_slot :: proc(stmt: ^Stmt, index: i32) {
 @(private)
 stmt_release_blob_slot :: proc(stmt: ^Stmt, index: i32) {
 	if existing, ok := stmt.bound_blob_storage[index]; ok {
-		delete(existing)
+		delete(existing, owner_allocator(stmt.allocator))
 		delete_key(&stmt.bound_blob_storage, index)
 	}
 }
@@ -140,9 +142,23 @@ stmt_bind_text :: proc(stmt: ^Stmt, index: int, value: string) -> (Error, bool) 
 		return err, false
 	}
 
+	allocator := owner_allocator(stmt.allocator)
+
 	// Allocate the candidate without touching the current SQLITE_STATIC
 	// backing. If SQLite rejects the rebind, the old binding remains valid.
-	c_value := strings.clone_to_cstring(value)
+	// A nil pointer would make SQLite bind NULL and report success.
+	c_value, alloc_err := strings.clone_to_cstring(value, allocator)
+	if alloc_err != nil {
+		return error_alloc("stmt_bind_text", alloc_err), false
+	}
+
+	// Reserve the tracking slot before SQLite can hold the pointer, so a
+	// failed map growth cannot leave an untracked SQLITE_STATIC buffer.
+	_, slot, inserted, slot_err := map_entry(&stmt.bound_text_storage, i32(index))
+	if slot_err != nil {
+		delete(c_value, allocator)
+		return error_alloc("stmt_bind_text", slot_err), false
+	}
 
 	rc := raw.bind_text64(
 		stmt.handle,
@@ -153,12 +169,19 @@ stmt_bind_text :: proc(stmt: ^Stmt, index: int, value: string) -> (Error, bool) 
 		u8(raw.UTF8),
 	)
 	if rc != raw.OK {
-		delete(c_value)
+		delete(c_value, allocator)
+		if inserted {
+			delete_key(&stmt.bound_text_storage, i32(index))
+		}
 		return result_from_stmt(stmt^, int(rc))
 	}
 
-	stmt_release_bound_slot(stmt, i32(index))
-	stmt.bound_text_storage[i32(index)] = c_value
+	// SQLite no longer references the previous buffer for this slot.
+	if !inserted {
+		delete(slot^, allocator)
+	}
+	slot^ = c_value
+	stmt_release_blob_slot(stmt, i32(index))
 	return error_none(), true
 
 }
@@ -175,12 +198,27 @@ stmt_bind_blob :: proc(stmt: ^Stmt, index: int, value: []u8) -> (Error, bool) {
 		return err, false
 	}
 
+	allocator := owner_allocator(stmt.allocator)
 	stored: []u8
 	data_ptr := rawptr(&stmt_empty_blob_sentinel)
+	slot: ^[]u8
+	inserted := false
 	if len(value) > 0 {
-		stored = make([]u8, len(value))
+		alloc_err: runtime.Allocator_Error
+		stored, alloc_err = make([]u8, len(value), allocator)
+		if alloc_err != nil {
+			return error_alloc("stmt_bind_blob", alloc_err), false
+		}
 		copy(stored, value)
 		data_ptr = rawptr(&stored[0])
+
+		// Reserve the tracking slot before SQLite can hold the pointer.
+		slot_err: runtime.Allocator_Error
+		_, slot, inserted, slot_err = map_entry(&stmt.bound_blob_storage, i32(index))
+		if slot_err != nil {
+			delete(stored, allocator)
+			return error_alloc("stmt_bind_blob", slot_err), false
+		}
 	}
 
 	rc := raw.bind_blob64(
@@ -191,13 +229,23 @@ stmt_bind_blob :: proc(stmt: ^Stmt, index: int, value: []u8) -> (Error, bool) {
 		raw.STATIC,
 	)
 	if rc != raw.OK {
-		delete(stored)
+		delete(stored, allocator)
+		if inserted {
+			delete_key(&stmt.bound_blob_storage, i32(index))
+		}
 		return result_from_stmt(stmt^, int(rc))
 	}
 
-	stmt_release_bound_slot(stmt, i32(index))
-	if len(stored) > 0 {
-		stmt.bound_blob_storage[i32(index)] = stored
+	stmt_release_text_slot(stmt, i32(index))
+	if slot != nil {
+		// SQLite no longer references the previous buffer for this slot.
+		if !inserted {
+			delete(slot^, allocator)
+		}
+		slot^ = stored
+	} else {
+		// Empty blobs bind the static sentinel and need no tracked storage.
+		stmt_release_blob_slot(stmt, i32(index))
 	}
 	return error_none(), true
 }

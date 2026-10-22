@@ -233,7 +233,12 @@ db_query_all_struct :: proc(
 			return nil, scan_err, false
 		}
 
-		append(&rows, row)
+		if _, append_err := append(&rows, row); append_err != nil {
+			row_mapping_free_struct_owned(rawptr(&row), base_info, allocator)
+			row_mapping_free_rows(&rows, base_info, allocator)
+			delete(rows)
+			return nil, error_alloc(query_all_struct_op, append_err), false
+		}
 	}
 
 	return rows[:], error_none(), true
@@ -812,7 +817,11 @@ row_mapping_assign_string :: proc(
 
 	value := ""
 	if !stmt_is_null(stmt, column_index) {
-		value = stmt_get_text(stmt, column_index, allocator)
+		alloc_err: runtime.Allocator_Error
+		value, alloc_err = stmt_copy_text(stmt, column_index, allocator)
+		if alloc_err != nil {
+			return error_alloc(row_mapping_op, alloc_err), false
+		}
 	}
 
 	(^string)(field_ptr)^ = value
@@ -837,7 +846,11 @@ row_mapping_assign_slice :: proc(
 
 	value := ([]u8)(nil)
 	if !stmt_is_null(stmt, column_index) {
-		value = stmt_get_blob(stmt, column_index, allocator)
+		alloc_err: runtime.Allocator_Error
+		value, alloc_err = stmt_copy_blob(stmt, column_index, allocator)
+		if alloc_err != nil {
+			return error_alloc(row_mapping_op, alloc_err), false
+		}
 	}
 
 	(^[]u8)(field_ptr)^ = value

@@ -1,5 +1,6 @@
 package sqlite
 
+import "base:runtime"
 import "core:strings"
 import raw "raw/generated"
 
@@ -17,9 +18,14 @@ db_wal_checkpoint :: proc(
 		return Wal_Checkpoint_Result{}, error_from_db(db, int(raw.MISUSE), ""), false
 	}
 
+	// A nil schema means "every attached database" to SQLite.
 	c_schema := cstring(nil)
 	if schema != "" {
-		c_schema = strings.clone_to_cstring(schema)
+		alloc_err: runtime.Allocator_Error
+		c_schema, alloc_err = strings.clone_to_cstring(schema)
+		if alloc_err != nil {
+			return Wal_Checkpoint_Result{}, error_alloc("db_wal_checkpoint", alloc_err), false
+		}
 	}
 	defer delete(c_schema)
 

@@ -8,7 +8,12 @@ db_exec :: proc(db: DB, sql: string) -> (Error, bool) {
 		return error_from_db(db, int(raw.MISUSE), sql), false
 	}
 
-	c_sql := strings.clone_to_cstring(sql)
+	// sqlite3_exec treats a nil zSql as "" and returns OK, so an allocation
+	// failure here would silently skip BEGIN/COMMIT/ROLLBACK.
+	c_sql, alloc_err := strings.clone_to_cstring(sql)
+	if alloc_err != nil {
+		return error_alloc("db_exec", alloc_err), false
+	}
 	defer delete(c_sql)
 
 	rc := raw.exec(db.handle, c_sql, nil, nil, nil)
@@ -134,7 +139,11 @@ db_scalar_text :: proc(db: DB, sql: string, flags: int = DEFAULT_PREPARE_FLAGS, 
 		return "", error_none(), true
 	}
 
-	return stmt_get_text(stmt, 0, allocator), error_none(), true
+	text, alloc_err := stmt_copy_text(stmt, 0, allocator)
+	if alloc_err != nil {
+		return "", error_alloc("db_scalar_text", alloc_err), false
+	}
+	return text, error_none(), true
 }
 
 db_exists :: proc(db: DB, sql: string, flags: int = DEFAULT_PREPARE_FLAGS) -> (bool, Error, bool) {

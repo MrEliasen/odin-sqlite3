@@ -6,7 +6,16 @@ import raw "raw/generated"
 DEFAULT_PREPARE_FLAGS :: 0
 PERSISTENT_PREPARE_FLAGS :: int(raw.PREPARE_PERSISTENT)
 
-stmt_prepare :: proc(db: DB, sql: string, flags: int = DEFAULT_PREPARE_FLAGS) -> (Stmt, Error, bool) {
+// stmt_prepare compiles `sql`. `allocator` becomes the statement's owning
+// allocator: the cloned SQL text and every bound text/blob copy are allocated
+// from it and released to it by stmt_finalize, whatever context.allocator is
+// current at bind/finalize time. Returned Errors still use context.allocator.
+stmt_prepare :: proc(
+	db: DB,
+	sql: string,
+	flags: int = DEFAULT_PREPARE_FLAGS,
+	allocator := context.allocator,
+) -> (Stmt, Error, bool) {
 	if db.handle == nil {
 		return Stmt{}, error_from_db(db, int(raw.MISUSE), sql), false
 	}
@@ -26,9 +35,17 @@ stmt_prepare :: proc(db: DB, sql: string, flags: int = DEFAULT_PREPARE_FLAGS) ->
 	stmt := Stmt{
 		db            = db.handle,
 		prepare_flags = u32(flags),
+		allocator     = allocator,
+		// Pin the storage maps to the owning allocator without allocating.
+		bound_text_storage = make(map[i32]cstring, allocator),
+		bound_blob_storage = make(map[i32][]u8, allocator),
 	}
 
-	c_sql := strings.clone_to_cstring(sql)
+	// A nil zSql would make SQLite report MISUSE instead of the real cause.
+	c_sql, c_err := strings.clone_to_cstring(sql)
+	if c_err != nil {
+		return Stmt{}, error_alloc("stmt_prepare", c_err), false
+	}
 	defer delete(c_sql)
 	rc := raw.prepare_v3(db.handle, c_sql, i32(len(sql)), u32(flags), &stmt.handle, nil)
 	if rc != raw.OK {
@@ -40,14 +57,19 @@ stmt_prepare :: proc(db: DB, sql: string, flags: int = DEFAULT_PREPARE_FLAGS) ->
 	}
 
 	// Wrapper diagnostics and cache metadata must not borrow caller storage.
-	stmt.sql = strings.clone(sql)
+	sql_copy, sql_err := strings.clone(sql, allocator)
+	if sql_err != nil {
+		_ = raw.finalize(stmt.handle)
+		return Stmt{}, error_alloc("stmt_prepare", sql_err), false
+	}
+	stmt.sql = sql_copy
 	stmt.owned_sql = true
 
 	return stmt, error_none(), true
 }
 
-stmt_prepare_persistent :: proc(db: DB, sql: string) -> (Stmt, Error, bool) {
-	return stmt_prepare(db, sql, PERSISTENT_PREPARE_FLAGS)
+stmt_prepare_persistent :: proc(db: DB, sql: string, allocator := context.allocator) -> (Stmt, Error, bool) {
+	return stmt_prepare(db, sql, PERSISTENT_PREPARE_FLAGS, allocator)
 }
 
 stmt_step :: proc(stmt: Stmt) -> (Step_Result, Error, bool) {
@@ -128,16 +150,20 @@ stmt_finalize :: proc(stmt: ^Stmt) -> (Error, bool) {
 	stmt_clear_bound_storage(stmt)
 
 	if stmt.owned_sql {
-		delete(stmt.sql)
+		delete(stmt.sql, owner_allocator(stmt.allocator))
 		stmt.owned_sql = false
 	}
 
+	// Maps free through the allocator they recorded.
 	delete(stmt.bound_text_storage)
 	delete(stmt.bound_blob_storage)
+	stmt.bound_text_storage = nil
+	stmt.bound_blob_storage = nil
 
 	stmt.db = nil
 	stmt.sql = ""
 	stmt.prepare_flags = 0
+	stmt.allocator = {}
 	return err, ok
 }
 

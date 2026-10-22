@@ -1,5 +1,6 @@
 package sqlite
 
+import "base:runtime"
 import "core:fmt"
 import "core:strings"
 import raw "raw/generated"
@@ -152,6 +153,17 @@ error_has_op :: proc(err: Error) -> bool {
 // `(primary | (extension << 8))`, so masking with 0xFF recovers the primary.
 error_primary_code :: proc(code: int) -> int {
 	return code & 0xFF
+}
+
+// error_alloc reports a wrapper-side allocation failure as SQLITE_NOMEM. Its
+// strings are best-effort: they are empty when context.allocator is the
+// exhausted allocator, and error_destroy handles that.
+@(private)
+error_alloc :: proc(op: string, alloc_err: runtime.Allocator_Error) -> Error {
+	err := error_make(int(raw.NOMEM), "sqlite: wrapper allocation failed")
+	error_with_op(&err, op)
+	error_with_context(&err, fmt.tprintf("allocator error: %v", alloc_err))
+	return err
 }
 
 // error_from_db builds an Error from a SQLite return code, cloning the
