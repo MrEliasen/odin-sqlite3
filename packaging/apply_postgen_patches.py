@@ -511,12 +511,37 @@ SNAPSHOT_API_SYMBOLS: tuple[str, ...] = (
     "sqlite3_snapshot_recover",
 )
 
+# The header declares these whenever NDEBUG is undefined, but sqliteInt.h
+# defines NDEBUG for every build without SQLITE_DEBUG, so release libraries
+# (including the pinned qualification build) do not export them.
+DEBUG_MUTEX_API_SYMBOLS: tuple[str, ...] = (
+    "sqlite3_mutex_held",
+    "sqlite3_mutex_notheld",
+)
+
+# Defined only when SQLite is compiled with SQLITE_ENABLE_CARRAY.
+CARRAY_API_SYMBOLS: tuple[str, ...] = (
+    "sqlite3_carray_bind",
+    "sqlite3_carray_bind_v2",
+)
+
+# Declared on every platform, but defined only by Windows builds
+# (SQLITE_OS_WIN && _WIN32). Gated with `when ODIN_OS == .Windows` rather than
+# an Odin #config definition.
+WINDOWS_API_SYMBOLS: tuple[str, ...] = (
+    "sqlite3_win32_set_directory",
+    "sqlite3_win32_set_directory8",
+    "sqlite3_win32_set_directory16",
+)
+
 OPTIONAL_API_SYMBOLS: tuple[str, ...] = (
     NORMALIZE_PREUPDATE_SESSION_API_SYMBOLS
     + COLUMN_METADATA_API_SYMBOLS
     + UNLOCK_NOTIFY_API_SYMBOLS
     + STMT_SCANSTATUS_API_SYMBOLS
     + SNAPSHOT_API_SYMBOLS
+    + DEBUG_MUTEX_API_SYMBOLS
+    + CARRAY_API_SYMBOLS
 )
 
 FEATURE_GATED_API_SYMBOLS: dict[str, tuple[str, ...]] = {
@@ -527,12 +552,16 @@ FEATURE_GATED_API_SYMBOLS: dict[str, tuple[str, ...]] = {
     "HAS_UNLOCK_NOTIFY_API": UNLOCK_NOTIFY_API_SYMBOLS,
     "HAS_STMT_SCANSTATUS_API": STMT_SCANSTATUS_API_SYMBOLS,
     "HAS_SNAPSHOT_API": SNAPSHOT_API_SYMBOLS,
+    "HAS_DEBUG_MUTEX_API": DEBUG_MUTEX_API_SYMBOLS,
+    "HAS_CARRAY_API": CARRAY_API_SYMBOLS,
 }
 
 HOST_MISSING_OPTIONAL_SYMBOLS: set[str] = {
     "sqlite3_normalized_sql",
     *STMT_SCANSTATUS_API_SYMBOLS,
     *SNAPSHOT_API_SYMBOLS,
+    *DEBUG_MUTEX_API_SYMBOLS,
+    *CARRAY_API_SYMBOLS,
 }
 
 HOST_ENABLED_FEATURE_GATES: tuple[str, ...] = (
@@ -542,15 +571,28 @@ HOST_ENABLED_FEATURE_GATES: tuple[str, ...] = (
     "HAS_UNLOCK_NOTIFY_API",
 )
 
-ALL_FEATURE_GATES: tuple[str, ...] = tuple(FEATURE_GATED_API_SYMBOLS)
+# The "all" profile is every gate the checksum-pinned qualification library
+# (ci/build_sqlite.py, ci/qualify.py's "all" profile) is compiled for. That
+# build deliberately omits SQLITE_DEBUG and SQLITE_ENABLE_CARRAY, so
+# HAS_DEBUG_MUTEX_API and HAS_CARRAY_API are not part of it.
+PINNED_LIBRARY_FEATURE_GATES: tuple[str, ...] = (
+    "HAS_NORMALIZE_API",
+    "HAS_PREUPDATE_API",
+    "HAS_SESSION_API",
+    "HAS_COLUMN_METADATA_API",
+    "HAS_UNLOCK_NOTIFY_API",
+    "HAS_STMT_SCANSTATUS_API",
+    "HAS_SNAPSHOT_API",
+)
 FEATURE_PROFILES: dict[str, tuple[str, ...]] = {
-    "all": ALL_FEATURE_GATES,
+    "all": PINNED_LIBRARY_FEATURE_GATES,
     "homebrew": HOST_ENABLED_FEATURE_GATES,
 }
 
 UNSUPPORTED_CEROD_SYMBOL = "sqlite3_activate_cerod"
-EXPECTED_BASELINE_API_COUNT = 283
-EXPECTED_OPTIONAL_API_COUNT = 81
+EXPECTED_BASELINE_API_COUNT = 276
+EXPECTED_OPTIONAL_API_COUNT = 85
+EXPECTED_WINDOWS_API_COUNT = 3
 EXPECTED_HOST_OPTIONAL_API_COUNT = 72
 
 OPTIONAL_API_TYPES: tuple[str, ...] = (
@@ -595,17 +637,29 @@ def fail(message: str) -> None:
 def published_header_api_symbols(header_text: str) -> set[str]:
     """Extract the public sqlite3* function names from the pinned header.
 
-    The pinned 3.53.1 header contains exactly 283 baseline APIs, 81 APIs in
-    the optional feature families inventoried above, and the unsupported
-    proprietary CEROD declaration. Keeping the expected totals explicit makes
-    an upstream header change fail closed until the binding contract is
-    reviewed.
+    The pinned 3.53.1 header contains exactly 276 baseline APIs, 85 APIs in
+    the optional feature families inventoried above, 3 Windows-only APIs, and
+    the unsupported proprietary CEROD declaration. Keeping the expected totals
+    explicit makes an upstream header change fail closed until the binding
+    contract is reviewed.
     """
     return set(
         re.findall(
             r"SQLITE_API[\s\S]{0,300}?\b(sqlite3[A-Za-z0-9_]+)\s*\(",
             header_text,
         )
+    )
+
+
+def baseline_api_symbols(header_text: str) -> set[str]:
+    """Return the ungated public functions: every published API that is not
+    behind a feature gate, Windows-only, or the excluded CEROD declaration.
+    Every one of these must be exported by any supported SQLite library."""
+    return (
+        published_header_api_symbols(header_text)
+        - set(OPTIONAL_API_SYMBOLS)
+        - set(WINDOWS_API_SYMBOLS)
+        - {UNSUPPORTED_CEROD_SYMBOL}
     )
 
 
@@ -720,6 +774,8 @@ def patch_generated_file() -> PatchResult:
         "HAS_UNLOCK_NOTIFY_API",
         "HAS_STMT_SCANSTATUS_API",
         "HAS_SNAPSHOT_API",
+        "HAS_DEBUG_MUTEX_API",
+        "HAS_CARRAY_API",
     ):
         declaration = f"{gate} :: #config(SQLITE_{gate}, false)"
         if declaration not in text:
@@ -1017,6 +1073,66 @@ def patch_generated_file() -> PatchResult:
         )
         applied += count
 
+    debug_mutex_decls = (
+        "\tmutex_held    :: proc(^Mutex) -> i32 ---\n"
+        "\tmutex_notheld :: proc(^Mutex) -> i32 ---"
+    )
+    debug_mutex_gated = (
+        "\twhen HAS_DEBUG_MUTEX_API {\n"
+        f"{debug_mutex_decls}\n"
+        "\t}"
+    )
+    if debug_mutex_gated not in text:
+        text, count = replace_one_required(
+            text,
+            debug_mutex_decls,
+            debug_mutex_gated,
+            "sqlite3_mutex_held/notheld availability gate",
+        )
+        applied += count
+
+    carray_decls = (
+        "\tcarray_bind_v2 :: proc(pStmt: ^Stmt, i: i32, aData: rawptr, nData: i32, "
+        "mFlags: i32, xDel: proc \"c\" (rawptr), pDel: rawptr /* Optional argument "
+        "to xDel() */) -> i32 ---\n"
+        "\tcarray_bind    :: proc(pStmt: ^Stmt, i: i32, aData: rawptr, nData: i32, "
+        "mFlags: i32, xDel: proc \"c\" (rawptr /* Destructor for aData */) /* "
+        "Destructor for aData */) -> i32 ---"
+    )
+    carray_gated = (
+        "\twhen HAS_CARRAY_API {\n"
+        f"{carray_decls}\n"
+        "\t}"
+    )
+    if carray_gated not in text:
+        text, count = replace_one_required(
+            text,
+            carray_decls,
+            carray_gated,
+            "sqlite3_carray_bind availability gate",
+        )
+        applied += count
+
+    windows_decls = (
+        "\twin32_set_directory   :: proc(type: c.ulong, zValue: rawptr /* New value "
+        "for directory being set or reset */) -> i32 ---\n"
+        "\twin32_set_directory8  :: proc(type: c.ulong, zValue: cstring) -> i32 ---\n"
+        "\twin32_set_directory16 :: proc(type: c.ulong, zValue: rawptr) -> i32 ---"
+    )
+    windows_gated = (
+        "\twhen ODIN_OS == .Windows {\n"
+        f"{windows_decls}\n"
+        "\t}"
+    )
+    if windows_gated not in text:
+        text, count = replace_one_required(
+            text,
+            windows_decls,
+            windows_gated,
+            "sqlite3_win32_set_directory Windows-only gate",
+        )
+        applied += count
+
     # C `va_list` parameters decay to `__va_list_tag *` on SysV x86-64, so
     # passing Odin's 24-byte c.va_list by value there is an ABI mismatch.
     # Elsewhere (Windows x64, arm64) the C ABI matches passing it by value.
@@ -1167,6 +1283,9 @@ def patch_generated_file() -> PatchResult:
         (snapshot_type_gated, "snapshot type"),
         (snapshot_first_gated, "snapshot functions start"),
         (snapshot_last_gated, "snapshot functions end"),
+        (debug_mutex_gated, "debug mutex"),
+        (carray_gated, "carray"),
+        (windows_gated, "Windows-only win32_set_directory"),
     ):
         if gated_snippet not in text:
             fail(f"post-patch verification failed: {description} gate is incomplete")
@@ -1219,24 +1338,48 @@ def patch_generated_file() -> PatchResult:
         PINNED_SQLITE_HEADER.read_text(encoding="utf-8")
     )
     optional_symbols = set(OPTIONAL_API_SYMBOLS)
+    windows_symbols = set(WINDOWS_API_SYMBOLS)
     expected_published_count = (
-        EXPECTED_BASELINE_API_COUNT + EXPECTED_OPTIONAL_API_COUNT + 1
+        EXPECTED_BASELINE_API_COUNT
+        + EXPECTED_OPTIONAL_API_COUNT
+        + EXPECTED_WINDOWS_API_COUNT
+        + 1
     )
     if len(published_symbols) != expected_published_count:
         fail(
             "pinned header public API inventory changed: "
             f"found {len(published_symbols)}, expected {expected_published_count} "
-            "(283 baseline + 81 optional + CEROD)"
+            f"({EXPECTED_BASELINE_API_COUNT} baseline + {EXPECTED_OPTIONAL_API_COUNT} "
+            f"optional + {EXPECTED_WINDOWS_API_COUNT} Windows-only + CEROD)"
         )
     if not optional_symbols.issubset(published_symbols):
         fail(
             "optional API inventory contains symbols absent from the pinned header: "
             f"{sorted(optional_symbols - published_symbols)}"
         )
+    if len(windows_symbols) != EXPECTED_WINDOWS_API_COUNT or not windows_symbols.issubset(
+        published_symbols
+    ):
+        fail(
+            f"Windows-only API inventory must contain {EXPECTED_WINDOWS_API_COUNT} "
+            "symbols published by the pinned header"
+        )
+    for symbol in WINDOWS_API_SYMBOLS:
+        local_name = symbol.removeprefix("sqlite3_")
+        declaration_count = len(
+            re.findall(rf"(?m)^\s*{re.escape(local_name)}\s+:: proc", text)
+        )
+        if declaration_count != 1:
+            fail(
+                f"post-patch verification failed: Windows-only API {symbol} has "
+                f"{declaration_count} declarations"
+            )
     if UNSUPPORTED_CEROD_SYMBOL not in published_symbols:
         fail("pinned header no longer contains the explicitly excluded CEROD declaration")
 
-    baseline_symbols = published_symbols - optional_symbols - {UNSUPPORTED_CEROD_SYMBOL}
+    baseline_symbols = (
+        published_symbols - optional_symbols - windows_symbols - {UNSUPPORTED_CEROD_SYMBOL}
+    )
     if len(baseline_symbols) != EXPECTED_BASELINE_API_COUNT:
         fail(
             f"baseline API inventory must contain {EXPECTED_BASELINE_API_COUNT} symbols; "
@@ -1377,7 +1520,26 @@ def odin_abi_probe_source() -> str:
     return "\n".join(lines)
 
 
-def odin_optional_link_probe_source(enabled_feature_gates: tuple[str, ...]) -> str:
+def ungated_link_symbols() -> list[str]:
+    """Every symbol the raw package declares without a feature gate on this
+    host: the baseline APIs, plus the Windows-only APIs on Windows. Any SQLite
+    library the package supports must export all of them."""
+    ensure_file(PINNED_SQLITE_HEADER)
+    symbols = sorted(baseline_api_symbols(PINNED_SQLITE_HEADER.read_text(encoding="utf-8")))
+    if len(symbols) != EXPECTED_BASELINE_API_COUNT:
+        fail(
+            f"baseline API inventory must contain {EXPECTED_BASELINE_API_COUNT} symbols; "
+            f"found {len(symbols)}"
+        )
+    if os.name == "nt":
+        symbols.extend(WINDOWS_API_SYMBOLS)
+    return symbols
+
+
+def odin_optional_link_probe_source(
+    enabled_feature_gates: tuple[str, ...],
+    ungated_symbols: list[str],
+) -> str:
     referenced_symbols = [
         symbol
         for gate in enabled_feature_gates
@@ -1390,25 +1552,36 @@ def odin_optional_link_probe_source(enabled_feature_gates: tuple[str, ...]) -> s
         'import "core:os"',
         'import raw "project:sqlite/raw/generated"',
         "",
+        "count_loaded :: proc(references: []rawptr) -> int {",
+        "\tloaded := 0",
+        "\tfor reference in references {",
+        "\t\tif reference != nil {",
+        "\t\t\tloaded += 1",
+        "\t\t}",
+        "\t}",
+        "\treturn loaded",
+        "}",
+        "",
         "main :: proc() {",
-        f"\treferences := [{len(referenced_symbols)}]rawptr {{",
     ]
-    for symbol in referenced_symbols:
-        local_name = symbol.removeprefix("sqlite3_")
-        lines.append(f"\t\ttransmute(rawptr)(raw.{local_name}),")
+    for array_name, symbols in (
+        ("ungated", ungated_symbols),
+        ("optional", referenced_symbols),
+    ):
+        lines.append(f"\t{array_name} := [{len(symbols)}]rawptr {{")
+        for symbol in symbols:
+            local_name = symbol.removeprefix("sqlite3_")
+            lines.append(f"\t\ttransmute(rawptr)(raw.{local_name}),")
+        lines.append("\t}")
     lines.extend(
         (
-            "\t}",
-            "\tloaded_references := 0",
-            "\tfor reference in references {",
-            "\t\tif reference != nil {",
-            "\t\t\tloaded_references += 1",
-            "\t\t}",
-            "\t}",
-            "\tif loaded_references != len(references) {",
+            "\tloaded_ungated := count_loaded(ungated[:])",
+            "\tloaded_optional := count_loaded(optional[:])",
+            "\tif loaded_ungated != len(ungated) || loaded_optional != len(optional) {",
             "\t\tos.exit(1)",
             "\t}",
-            '\tfmt.printf("referenced optional symbols: %d\\n", loaded_references)',
+            '\tfmt.printf("referenced ungated symbols: %d\\n", loaded_ungated)',
+            '\tfmt.printf("referenced optional symbols: %d\\n", loaded_optional)',
             "}",
             "",
         )
@@ -1530,7 +1703,9 @@ def verify_host_symbols(library: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="odin-sqlite3-link-") as temp_name:
         temp_dir = Path(temp_name)
         (temp_dir / "link_probe.odin").write_text(
-            odin_optional_link_probe_source(HOST_ENABLED_FEATURE_GATES),
+            odin_optional_link_probe_source(
+                HOST_ENABLED_FEATURE_GATES, ungated_link_symbols()
+            ),
             encoding="utf-8",
         )
         command = [
@@ -1550,9 +1725,9 @@ def verify_host_symbols(library: Path) -> None:
     print(
         f"Host symbols verified: {EXPECTED_HOST_OPTIONAL_API_COUNT}/"
         f"{EXPECTED_OPTIONAL_API_COUNT} optional APIs exported by {library}; "
-        f"all {EXPECTED_HOST_OPTIONAL_API_COUNT} referenced by an Odin link probe; "
-        "normalize, statement scan-status, snapshot, and sqlite3_activate_cerod "
-        "are absent."
+        f"all {EXPECTED_HOST_OPTIONAL_API_COUNT} referenced by an Odin link probe "
+        "together with every ungated symbol; normalize, statement scan-status, "
+        "snapshot, debug-mutex, carray, and sqlite3_activate_cerod are absent."
     )
 
 
@@ -1562,6 +1737,9 @@ def verify_optional_link(library: Path, feature_profile: str) -> None:
     linked_symbol_count = sum(
         len(FEATURE_GATED_API_SYMBOLS[gate]) for gate in enabled_feature_gates
     )
+    # Also reference every ungated declaration so that an API the raw package
+    # exposes without a gate, but the library does not export, fails here.
+    ungated_symbols = ungated_link_symbols()
 
     odin = shutil.which("odin")
     if odin is None:
@@ -1569,7 +1747,7 @@ def verify_optional_link(library: Path, feature_profile: str) -> None:
     with tempfile.TemporaryDirectory(prefix="odin-sqlite3-optional-link-") as temp_name:
         temp_dir = Path(temp_name)
         (temp_dir / "link_probe.odin").write_text(
-            odin_optional_link_probe_source(enabled_feature_gates),
+            odin_optional_link_probe_source(enabled_feature_gates, ungated_symbols),
             encoding="utf-8",
         )
         if os.name == "nt":
@@ -1596,16 +1774,19 @@ def verify_optional_link(library: Path, feature_profile: str) -> None:
         ]
         output = run_checked(command, cwd=PROJECT_ROOT)
 
-    expected_output = f"referenced optional symbols: {linked_symbol_count}"
-    if expected_output not in output.splitlines():
-        fail(
-            "optional symbol probe did not report the expected reference count: "
-            f"expected {expected_output!r}, output={output!r}"
-        )
+    for expected_output in (
+        f"referenced ungated symbols: {len(ungated_symbols)}",
+        f"referenced optional symbols: {linked_symbol_count}",
+    ):
+        if expected_output not in output.splitlines():
+            fail(
+                "symbol link probe did not report the expected reference count: "
+                f"expected {expected_output!r}, output={output!r}"
+            )
     print(
-        f"Optional symbol link-and-load/reference probe passed: {linked_symbol_count}/"
-        f"{EXPECTED_OPTIONAL_API_COUNT} symbols for profile {feature_profile!r} "
-        f"through {library.resolve()}."
+        f"Symbol link-and-load/reference probe passed: {len(ungated_symbols)} ungated "
+        f"and {linked_symbol_count}/{EXPECTED_OPTIONAL_API_COUNT} optional symbols "
+        f"for profile {feature_profile!r} through {library.resolve()}."
     )
 
 
@@ -1620,15 +1801,15 @@ def parse_args() -> argparse.Namespace:
         "--verify-host-symbols",
         type=Path,
         metavar="SQLITE_LIBRARY",
-        help="verify the known 72/81 optional-symbol profile of a SQLite library",
+        help="verify the known 72/85 optional-symbol profile of a SQLite library",
     )
     parser.add_argument(
         "--verify-optional-link",
         type=Path,
         metavar="SQLITE_LIBRARY",
         help=(
-            "link and run a non-invoking reference probe for every optional "
-            "symbol in the selected feature profile"
+            "link and run a non-invoking reference probe for every ungated "
+            "symbol and every optional symbol in the selected feature profile"
         ),
     )
     parser.add_argument(
@@ -1656,8 +1837,9 @@ def main() -> int:
     )
     print(
         f"API coverage verified: {EXPECTED_BASELINE_API_COUNT}/"
-        f"{EXPECTED_BASELINE_API_COUNT} baseline and "
-        f"{EXPECTED_OPTIONAL_API_COUNT}/{EXPECTED_OPTIONAL_API_COUNT} optional; "
+        f"{EXPECTED_BASELINE_API_COUNT} baseline, "
+        f"{EXPECTED_OPTIONAL_API_COUNT}/{EXPECTED_OPTIONAL_API_COUNT} optional, and "
+        f"{EXPECTED_WINDOWS_API_COUNT}/{EXPECTED_WINDOWS_API_COUNT} Windows-only; "
         "sqlite3_activate_cerod excluded."
     )
     print("Post-generation patching complete.")

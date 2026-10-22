@@ -31,17 +31,24 @@ SQLITE_LIB :: #config(SQLITE_LIB, DEFAULT_SQLITE_LIB)
 // selecting a different system library cannot create accidental unresolved
 // links. Enable only the features exported by the chosen SQLITE_LIB, e.g.:
 //
-//   -define:SQLITE_HAS_PREUPDATE_API=true
-//   -define:SQLITE_HAS_SESSION_API=true
-//   -define:SQLITE_HAS_NORMALIZE_API=true
-//   -define:SQLITE_HAS_COLUMN_METADATA_API=true
-//   -define:SQLITE_HAS_UNLOCK_NOTIFY_API=true
-//   -define:SQLITE_HAS_STMT_SCANSTATUS_API=true
-//   -define:SQLITE_HAS_SNAPSHOT_API=true
+//   -define:SQLITE_HAS_PREUPDATE_API=true        (SQLITE_ENABLE_PREUPDATE_HOOK)
+//   -define:SQLITE_HAS_SESSION_API=true          (SQLITE_ENABLE_SESSION)
+//   -define:SQLITE_HAS_NORMALIZE_API=true        (SQLITE_ENABLE_NORMALIZE)
+//   -define:SQLITE_HAS_COLUMN_METADATA_API=true  (SQLITE_ENABLE_COLUMN_METADATA)
+//   -define:SQLITE_HAS_UNLOCK_NOTIFY_API=true    (SQLITE_ENABLE_UNLOCK_NOTIFY)
+//   -define:SQLITE_HAS_STMT_SCANSTATUS_API=true  (SQLITE_ENABLE_STMT_SCANSTATUS)
+//   -define:SQLITE_HAS_SNAPSHOT_API=true         (SQLITE_ENABLE_SNAPSHOT)
+//   -define:SQLITE_HAS_DEBUG_MUTEX_API=true      (SQLITE_DEBUG builds only)
+//   -define:SQLITE_HAS_CARRAY_API=true           (SQLITE_ENABLE_CARRAY)
+//
+// sqlite3_mutex_held() and sqlite3_mutex_notheld() exist only in SQLITE_DEBUG
+// builds, because SQLite defines NDEBUG otherwise. The
+// sqlite3_win32_set_directory*() functions are declared only when
+// ODIN_OS == .Windows.
 //
 // Homebrew SQLite 3.53.1 exports preupdate, session, column-metadata, and
 // unlock-notify (72 symbols total), but not normalize, statement scan-status,
-// or snapshot APIs.
+// snapshot, debug-mutex, or carray APIs.
 HAS_NORMALIZE_API :: #config(SQLITE_HAS_NORMALIZE_API, false)
 HAS_PREUPDATE_API :: #config(SQLITE_HAS_PREUPDATE_API, false)
 HAS_SESSION_API :: #config(SQLITE_HAS_SESSION_API, false)
@@ -49,6 +56,8 @@ HAS_COLUMN_METADATA_API :: #config(SQLITE_HAS_COLUMN_METADATA_API, false)
 HAS_UNLOCK_NOTIFY_API :: #config(SQLITE_HAS_UNLOCK_NOTIFY_API, false)
 HAS_STMT_SCANSTATUS_API :: #config(SQLITE_HAS_STMT_SCANSTATUS_API, false)
 HAS_SNAPSHOT_API :: #config(SQLITE_HAS_SNAPSHOT_API, false)
+HAS_DEBUG_MUTEX_API :: #config(SQLITE_HAS_DEBUG_MUTEX_API, false)
+HAS_CARRAY_API :: #config(SQLITE_HAS_CARRAY_API, false)
 
 when SQLITE_LIB == "" {
 	#panic("SQLITE_LIB must name a SQLite library")

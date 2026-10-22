@@ -140,7 +140,7 @@ jobs:
           --sqlite-library "$PWD/out/ci-sqlite/sqlite3.lib"
           --feature-profile all
 
-      - name: Run all-81-symbol link-and-load reference probe (Unix)
+      - name: Run ungated and optional symbol link-and-load reference probe (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: >-
@@ -148,7 +148,7 @@ jobs:
           --verify-optional-link "$PWD/out/ci-sqlite/libsqlite3.a"
           --feature-profile all
 
-      - name: Run all-81-symbol link-and-load reference probe (Windows)
+      - name: Run ungated and optional symbol link-and-load reference probe (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: >-

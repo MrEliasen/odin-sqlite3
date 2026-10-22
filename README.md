@@ -10,8 +10,9 @@ Thin SQLite bindings for Odin:
 
 Raw bindings target SQLite **3.53.1** and cover:
 
-- all 283 baseline public C functions;
-- all 81 compile-option-gated functions; and
+- all 276 baseline public C functions;
+- all 85 compile-option-gated functions;
+- 3 Windows-only functions (`sqlite3_win32_set_directory*`); and
 - ABI checks for 23 C structs.
 
 `sqlite3_activate_cerod` is the only excluded function. CEROD and other
@@ -87,8 +88,13 @@ SQLite library was built with its matching option.
 | `SQLITE_HAS_UNLOCK_NOTIFY_API` | `SQLITE_ENABLE_UNLOCK_NOTIFY` | complete |
 | `SQLITE_HAS_STMT_SCANSTATUS_API` | `SQLITE_ENABLE_STMT_SCANSTATUS` | complete |
 | `SQLITE_HAS_SNAPSHOT_API` | `SQLITE_ENABLE_SNAPSHOT` | recovery missing |
+| `SQLITE_HAS_DEBUG_MUTEX_API` | `SQLITE_DEBUG` | not built or tested |
+| `SQLITE_HAS_CARRAY_API` | `SQLITE_ENABLE_CARRAY` | not built or tested |
 
-The CI qualification library exports and link-loads all 81 gated symbols.
+The CI qualification library exports and link-loads every ungated symbol and
+the 81 symbols behind the first seven gates. It is not built with
+`SQLITE_DEBUG` or `SQLITE_ENABLE_CARRAY`. The `sqlite3_win32_set_directory*`
+functions are declared only when targeting Windows.
 
 ## Example
 

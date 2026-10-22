@@ -96,13 +96,17 @@ library was built with its matching SQLite option:
 - `SQLITE_HAS_UNLOCK_NOTIFY_API`
 - `SQLITE_HAS_STMT_SCANSTATUS_API`
 - `SQLITE_HAS_SNAPSHOT_API`
+- `SQLITE_HAS_DEBUG_MUTEX_API` (`SQLITE_DEBUG` builds only)
+- `SQLITE_HAS_CARRAY_API` (`SQLITE_ENABLE_CARRAY`)
 
-CI builds a static SQLite with all seven gated C-API families plus FTS5 and
-R-Tree from the pinned
-source, then runs a probe that strongly references all 81 gated symbols and
-checks that every loaded address is non-null. This proves the symbols link and
-load through Odin; it does not functionally invoke those APIs. The same probe
-can be run locally:
+CI builds a static SQLite with the first seven gated C-API families plus FTS5
+and R-Tree from the pinned
+source, then runs a probe that strongly references all 276 ungated symbols and
+the 81 symbols behind those seven gates, and checks that every loaded address
+is non-null. On Windows the probe also references the 3 Windows-only
+`sqlite3_win32_set_directory*` symbols. This proves the symbols link and
+load through Odin; it does not functionally invoke those APIs. The debug-mutex
+and carray gates are not built in CI. The same probe can be run locally:
 
 ```sh
 python3 ci/build_sqlite.py --output out/ci-sqlite \
@@ -141,7 +145,7 @@ wrapper plus every example after its import path has been rewritten. The
 The workflow has three distinct gates:
 
 1. Linux regeneration, ABI/API verification, and the compile-only matrix above.
-2. Complete native runtime execution plus the 81-symbol optional
+2. Complete native runtime execution plus the ungated and optional symbol
    link-and-load/reference probe
    on Ubuntu 24.04 x64, macOS 14 arm64, and Windows Server 2022 x64.
 3. Complete native ASan execution on the same three runners, with the Windows

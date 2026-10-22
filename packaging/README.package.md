@@ -57,9 +57,12 @@ library selected by `SQLITE_LIB` was compiled with that feature; otherwise an
 application that references the API will fail to link.
 
 The project qualification workflow builds checksum-pinned SQLite 3.53.1 with
-all optional families, then runs a probe that strongly references all 81 gated
-symbols and checks that every loaded address is non-null on Linux, macOS, and
-Windows. This proves the symbols link and load; it does not functionally invoke
+the normalize, preupdate, session, column-metadata, unlock-notify,
+statement-scan-status, and snapshot families, then runs a probe that strongly
+references every ungated symbol plus the 81 symbols behind those gates and
+checks that every loaded address is non-null on Linux, macOS, and Windows. The
+`SQLITE_HAS_DEBUG_MUTEX_API` (`SQLITE_DEBUG`) and `SQLITE_HAS_CARRAY_API`
+(`SQLITE_ENABLE_CARRAY`) gates are not part of that build. This proves the symbols link and load; it does not functionally invoke
 those APIs. The separate cross-target checks are compile-only and do not claim
 runtime compatibility.
 
