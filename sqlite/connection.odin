@@ -85,11 +85,7 @@ db_close :: proc(db: ^DB) -> (Error, bool) {
 		return error_from_db(db^, int(rc), ""), false
 	}
 
-	if len(db.trace_config.events) > 0 {
-		trace_config_destroy(&db.trace_config, db.trace_allocator)
-	}
-	db.trace_config = Trace_Config{}
-	db.trace_allocator = {}
+	db.trace_settings = Trace_Settings{}
 	db.trace_enabled = false
 	db.handle = nil
 	return error_none(), true

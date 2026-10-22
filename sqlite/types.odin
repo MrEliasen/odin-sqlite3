@@ -4,10 +4,14 @@ import "base:runtime"
 import raw "raw/generated"
 
 DB :: struct {
-	handle:        ^raw.Sqlite3,
-	trace_enabled: bool,
-	trace_config:  Trace_Config,
-	trace_allocator: runtime.Allocator,
+	handle:         ^raw.Sqlite3,
+	trace_enabled:  bool,
+	// DB is a by-value handle (most procs take `db: DB`, and applications store
+	// copies), so it must not own heap memory: reconfiguring tracing through one
+	// copy would free storage that every other copy still references. Trace
+	// settings are therefore stored inline; db_trace_config rebuilds an owned
+	// Trace_Config on request.
+	trace_settings: Trace_Settings,
 }
 
 Stmt :: struct {
@@ -120,6 +124,19 @@ Trace_Event :: enum {
 
 Trace_Config :: struct {
 	events:              [dynamic]Trace_Event,
+	log_expanded_sql:    bool,
+	log_errors_only:     bool,
+	include_row_events:  bool,
+	include_close_event: bool,
+}
+
+// Trace_Settings is the allocation-free copy of a Trace_Config kept inside DB.
+// Events are only used for presence checks and the event mask, so duplicates
+// carry no meaning: they are dropped, keeping each event's first occurrence
+// (and so the configured order). One slot per Trace_Event therefore suffices.
+Trace_Settings :: struct {
+	events:              [len(Trace_Event)]Trace_Event,
+	event_count:         int,
 	log_expanded_sql:    bool,
 	log_errors_only:     bool,
 	include_row_events:  bool,
