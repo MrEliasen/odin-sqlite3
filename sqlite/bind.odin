@@ -145,7 +145,12 @@ stmt_bind_text :: proc(stmt: ^Stmt, index: int, value: string) -> (Error, bool) 
 	allocator := owner_allocator(stmt.allocator)
 
 	// Allocate the candidate without touching the current SQLITE_STATIC
-	// backing. If SQLite rejects the rebind, the old binding remains valid.
+	// backing; if SQLite rejects the rebind, that backing stays allocated and
+	// tracked. What the parameter then holds depends on where SQLite failed
+	// (vdbeUnbind): a busy statement (SQLITE_MISUSE) or an out-of-range index
+	// (SQLITE_RANGE) is rejected before the old value is touched, so it stays
+	// bound. Any later failure (e.g. SQLITE_TOOBIG, SQLITE_NOMEM) happens after
+	// SQLite has already released the old value, so the parameter is NULL.
 	// A nil pointer would make SQLite bind NULL and report success.
 	c_value, alloc_err := strings.clone_to_cstring(value, allocator)
 	if alloc_err != nil {

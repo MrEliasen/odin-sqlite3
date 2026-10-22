@@ -9,7 +9,8 @@ import raw "../sqlite/raw/generated"
 // Regression tests for defects found in the wrapper review: DB copies sharing
 // trace storage, 32-bit boolean reads, UTF-16 struct fields, a column index
 // built before re-prepare, embedded NUL truncation, per-row temp-allocator
-// growth, and clearing the bindings of a running statement.
+// growth, the failed-rebind contract, and clearing the bindings of a running
+// statement.
 
 run_review_regression_tests :: proc() {
 	run_test("trace_config_survives_db_copies", test_trace_config_survives_db_copies)
@@ -20,6 +21,7 @@ run_review_regression_tests :: proc() {
 	run_test("embedded_nul_open_path_is_rejected", test_embedded_nul_open_path_is_rejected)
 	run_test("embedded_nul_parameter_name_is_rejected", test_embedded_nul_parameter_name_is_rejected)
 	run_test("scan_struct_does_not_grow_temp_allocator", test_scan_struct_does_not_grow_temp_allocator)
+	run_test("failed_rebind_contract", test_failed_rebind_contract)
 	run_test("clear_bindings_on_running_statement_keeps_row_data", test_clear_bindings_on_running_statement_keeps_row_data)
 }
 
@@ -303,6 +305,33 @@ test_scan_struct_does_not_grow_temp_allocator :: proc() {
 	expect_eq(temp_tracker.total_allocation_count, 0, "per-row scans must not allocate from context.temp_allocator")
 	expect_eq(heap_tracker.current_memory_allocated, 0, "per-call scratch must be released before stmt_scan_struct returns")
 	expect_eq(len(heap_tracker.bad_free_array), 0, "per-call scratch must be freed with its own allocator")
+}
+
+// Pins the failed-rebind contract documented in stmt_bind_text: SQLITE_MISUSE
+// (busy) keeps the old value bound, while a failure after SQLite released the
+// old value (SQLITE_TOOBIG) leaves the parameter NULL. Either way the old
+// SQLITE_STATIC buffer stays allocated until finalize.
+test_failed_rebind_contract :: proc() {
+	test_db := test_db_open("failed_rebind_contract")
+	defer test_db_close(&test_db)
+	raw.limit(test_db.db.handle, raw.LIMIT_LENGTH, 16)
+
+	sql := "SELECT ?1"
+	stmt := prepare_ok(test_db.db, sql)
+	defer finalize_ok(&stmt, sql)
+
+	bind_text_ok(&stmt, 1, "short", sql)
+	step_expect_row(stmt, sql)
+	busy_err, busy_ok := sqlite.stmt_bind_text(&stmt, 1, "other")
+	expect_error(&busy_err, busy_ok, int(raw.MISUSE), "rebinding a running statement fails")
+	expect_eq(sqlite.stmt_get_text(stmt, 0, context.temp_allocator), "short", "a busy rebind keeps the old value")
+	reset_ok(&stmt, sql)
+
+	big_err, big_ok := sqlite.stmt_bind_text(&stmt, 1, "this text is longer than sixteen bytes")
+	expect_error(&big_err, big_ok, int(raw.TOOBIG), "an oversized rebind fails")
+	expect_eq(len(stmt.bound_text_storage), 1, "the old SQLITE_STATIC buffer stays tracked")
+	step_expect_row(stmt, sql)
+	expect_true(sqlite.stmt_is_null(stmt, 0), "SQLite released the old value before rejecting the size, so the parameter is NULL")
 }
 
 // sqlite3_clear_bindings is allowed on a running statement, but the current
