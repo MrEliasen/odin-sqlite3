@@ -20,6 +20,8 @@ run_connection_tests :: proc() {
 	run_test("connection_transaction_state_tracks_autocommit", test_connection_transaction_state_tracks_autocommit)
 	run_test("connection_interrupt_flag_roundtrip", test_connection_interrupt_flag_roundtrip)
 	run_test("connection_rejects_narrowing_wraps", test_connection_rejects_narrowing_wraps)
+	run_test("connection_finalize_after_close_reports_failure", test_connection_finalize_after_close_reports_failure)
+	run_test("connection_cache_destroy_after_close_reports_failure", test_connection_cache_destroy_after_close_reports_failure)
 }
 
 run_statement_tests :: proc() {

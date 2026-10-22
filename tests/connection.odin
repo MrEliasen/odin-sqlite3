@@ -148,3 +148,61 @@ test_connection_rejects_narrowing_wraps :: proc() {
 	timeout_err, timeout_ok := sqlite.db_set_busy_timeout(test_db.db, int(max(i32)) + 1)
 	expect_error(&timeout_err, timeout_ok, int(raw.RANGE), "busy timeout outside i32 must not wrap")
 }
+
+// db_close uses sqlite3_close_v2: while a statement is still open the
+// connection becomes a zombie, and finalizing its last statement frees it
+// inside sqlite3_finalize. stmt_finalize must not read the connection after
+// that. SQLite treats a zombie connection as invalid (sqlite3_errcode and
+// sqlite3_errmsg report MISUSE), so the step's "integer overflow" text is no
+// longer available and the error falls back to the generic text for its code.
+// The use-after-free itself is only visible to AddressSanitizer with an
+// ASan-instrumented SQLite library.
+test_connection_finalize_after_close_reports_failure :: proc() {
+	db, open_err, open_ok := sqlite.db_open(":memory:")
+	expect_no_error(open_err, open_ok, "opening in-memory db should succeed")
+
+	sql :: "SELECT abs(?1)"
+	stmt := prepare_ok(db, sql)
+	bind_i64_ok(&stmt, 1, min(i64), sql)
+	_, step_err, step_ok := sqlite.stmt_step(stmt)
+	expect_error(&step_err, step_ok, int(raw.ERROR), "abs(min(i64)) should fail with integer overflow")
+
+	close_err, close_ok := sqlite.db_close(&db)
+	expect_no_error(close_err, close_ok, "db_close should succeed and leave a zombie while the statement is open")
+
+	fin_err, fin_ok := sqlite.stmt_finalize(&stmt)
+	defer sqlite.error_destroy(&fin_err)
+	expect_false(fin_ok, "finalize should report the failed step's error")
+	expect_eq(fin_err.code, int(raw.ERROR), "finalize error code: %s", sqlite.error_string(fin_err))
+	expect_eq(fin_err.extended_code, int(raw.ERROR), "finalize extended code: %s", sqlite.error_string(fin_err))
+	expect_eq(fin_err.message, sqlite.db_errstr(int(raw.ERROR)), "finalize of a closed connection's statement can only report the generic text")
+	expect_false(sqlite.stmt_is_valid(stmt), "statement should be invalid after finalize")
+
+	again_err, again_ok := sqlite.stmt_finalize(&stmt)
+	expect_no_error(again_err, again_ok, "second finalize should be a no-op")
+}
+
+// Same lifetime as above, reached through the statement cache: cache_destroy
+// finalizes the last statement of a closed connection.
+test_connection_cache_destroy_after_close_reports_failure :: proc() {
+	db, open_err, open_ok := sqlite.db_open(":memory:")
+	expect_no_error(open_err, open_ok, "opening in-memory db should succeed")
+
+	cache := sqlite.cache_init()
+	sql :: "SELECT abs(?1)"
+	stmt, prep_err, prep_ok := sqlite.db_prepare_cached(db, &cache, sql)
+	expect_no_error(prep_err, prep_ok, "cached prepare should succeed")
+	bind_i64_ok(stmt, 1, min(i64), sql)
+	_, step_err, step_ok := sqlite.stmt_step(stmt^)
+	expect_error(&step_err, step_ok, int(raw.ERROR), "abs(min(i64)) should fail with integer overflow")
+
+	close_err, close_ok := sqlite.db_close(&db)
+	expect_no_error(close_err, close_ok, "db_close should succeed and leave a zombie while the cached statement is open")
+
+	destroy_err, destroy_ok := sqlite.cache_destroy(&cache)
+	defer sqlite.error_destroy(&destroy_err)
+	expect_false(destroy_ok, "cache_destroy should report the finalize error")
+	expect_eq(destroy_err.code, int(raw.ERROR), "cache_destroy error code: %s", sqlite.error_string(destroy_err))
+	expect_eq(destroy_err.message, sqlite.db_errstr(int(raw.ERROR)), "finalize of a closed connection's statement can only report the generic text")
+	expect_eq(sqlite.cache_count(cache), 0, "cache should be empty after destroy")
+}

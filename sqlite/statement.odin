@@ -103,12 +103,24 @@ stmt_finalize :: proc(stmt: ^Stmt) -> (Error, bool) {
 		return error_none(), true
 	}
 
-	rc := raw.finalize(stmt.handle)
+	// After db_close (sqlite3_close_v2) the connection stays alive only until
+	// its last statement is finalized, so sqlite3_finalize may free it and the
+	// connection must not be read afterwards. sqlite3_reset reports the same
+	// result finalize would (the previous execution's error, or a failure from
+	// halting a running statement) while the connection is still alive.
+	rc := raw.reset(stmt.handle)
 
 	err := error_none()
 	ok := true
 	if rc != raw.OK {
 		err = error_from_stmt(stmt^, int(rc))
+		ok = false
+	}
+
+	rc = raw.finalize(stmt.handle)
+	if rc != raw.OK && ok {
+		// The connection may already be freed: build the error from the code.
+		err = error_from_stmt(Stmt{sql = stmt.sql}, int(rc))
 		ok = false
 	}
 
