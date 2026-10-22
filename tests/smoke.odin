@@ -23,6 +23,7 @@ run_connection_tests :: proc() {
 	run_test("connection_finalize_after_close_reports_failure", test_connection_finalize_after_close_reports_failure)
 	run_test("connection_cache_destroy_after_close_reports_failure", test_connection_cache_destroy_after_close_reports_failure)
 	run_test("connection_blob_close_after_close_reports_commit_failure", test_connection_blob_close_after_close_reports_commit_failure)
+	run_test("connection_shared_across_threads_errors_are_well_formed", test_connection_shared_across_threads_errors_are_well_formed)
 }
 
 run_statement_tests :: proc() {

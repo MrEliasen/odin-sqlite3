@@ -1,5 +1,8 @@
 package tests
 
+import "core:fmt"
+import "core:sync"
+import "core:thread"
 import raw "../sqlite/raw/generated"
 import sqlite "../sqlite"
 
@@ -239,4 +242,192 @@ test_connection_blob_close_after_close_reports_commit_failure :: proc() {
 	payload, payload_err, payload_ok := sqlite.db_scalar_text(test_db.db, "SELECT hex(payload) FROM blob_zombie WHERE id = 1", allocator = context.temp_allocator)
 	expect_no_error(payload_err, payload_ok, "reading the payload back should succeed")
 	expect_eq(payload, "00000000", "the vetoed blob write must have been rolled back")
+}
+
+// One connection shared by several threads (the default FULLMUTEX mode). Each
+// thread runs calls that fail with its own long "no such table" message, and
+// error_from_db must read the connection's error state while no other thread
+// can change it. Another thread's next call frees the message buffer (copying
+// it afterwards is a use-after-free: garbage here, an ASan report under
+// -sanitize:address) and clears the error code while it runs (the Error then
+// falls back to the generic text). Messages over 1 KiB come from malloc, not
+// lookaside, so ASan can see the freed buffer.
+//
+// Another thread's message is accepted: SQLite keeps one error per connection,
+// so a failure in another thread between the call and the read can replace it
+// (a documented limitation of sharing a connection).
+//
+// The race is probabilistic, so a single run can miss a regression; the checks
+// cannot fail on correct code.
+@(private = "file")
+SHARED_CONN_THREADS :: 8
+@(private = "file")
+SHARED_CONN_ITERATIONS :: 2500
+@(private = "file")
+SHARED_CONN_NAME_MIN :: 1300
+@(private = "file")
+SHARED_CONN_NAME_SPREAD :: 400
+@(private = "file")
+SHARED_CONN_TABLE_PREFIX :: "SELECT * FROM t"
+@(private = "file")
+SHARED_CONN_MESSAGE_PREFIX :: "no such table: t"
+
+@(private = "file")
+Shared_Conn_Counts :: struct {
+	own:        int,
+	other:      int,
+	succeeded:  int,
+	empty:      int,
+	generic:    int,
+	malformed:  int,
+	sample_len: int,
+	sample:     [40]u8,
+}
+
+@(private = "file")
+Shared_Conn_State :: struct {
+	db:     sqlite.DB,
+	start:  sync.Barrier,
+	counts: [SHARED_CONN_THREADS]Shared_Conn_Counts,
+}
+
+// shared_conn_message_owner returns k when `msg` is exactly
+// "no such table: t<k>_" followed by a worker-sized run of the letter 'a'+k,
+// and -1 otherwise.
+@(private = "file")
+shared_conn_message_owner :: proc(msg: string) -> int {
+	prefix_len := len(SHARED_CONN_MESSAGE_PREFIX)
+	if len(msg) < prefix_len + 2 || msg[:prefix_len] != SHARED_CONN_MESSAGE_PREFIX {
+		return -1
+	}
+	k := int(msg[prefix_len]) - '0'
+	if k < 0 || k >= SHARED_CONN_THREADS || msg[prefix_len + 1] != '_' {
+		return -1
+	}
+	name := msg[prefix_len + 2:]
+	if len(name) < SHARED_CONN_NAME_MIN || len(name) >= SHARED_CONN_NAME_MIN + SHARED_CONN_NAME_SPREAD {
+		return -1
+	}
+	letter := u8('a' + k)
+	for i in 0 ..< len(name) {
+		if name[i] != letter {
+			return -1
+		}
+	}
+	return k
+}
+
+// Runs with core:thread's default context: the heap allocator and this
+// thread's own temp allocator. The harness's tracking allocator is not
+// thread-safe and must not be used here.
+@(private = "file")
+shared_conn_worker :: proc(state: ^Shared_Conn_State, tid: int) {
+	counts := &state.counts[tid]
+
+	sql_buf: [len(SHARED_CONN_TABLE_PREFIX) + 2 + SHARED_CONN_NAME_MIN + SHARED_CONN_NAME_SPREAD]u8
+	head := copy(sql_buf[:], SHARED_CONN_TABLE_PREFIX)
+	sql_buf[head] = u8('0' + tid)
+	sql_buf[head + 1] = '_'
+	head += 2
+	letter := u8('a' + tid)
+	for i in head ..< len(sql_buf) {
+		sql_buf[i] = letter
+	}
+
+	sync.barrier_wait(&state.start)
+
+	for i in 0 ..< SHARED_CONN_ITERATIONS {
+		name_len := SHARED_CONN_NAME_MIN + (i * 37 + tid * 11) % SHARED_CONN_NAME_SPREAD
+		sql := string(sql_buf[:head + name_len])
+
+		err: sqlite.Error
+		ok: bool
+		if i % 2 == 0 {
+			stmt: sqlite.Stmt
+			stmt, err, ok = sqlite.stmt_prepare(state.db, sql)
+			if ok {
+				sqlite.stmt_finalize_cleanup(&stmt)
+			}
+		} else {
+			err, ok = sqlite.db_exec(state.db, sql)
+		}
+
+		if ok {
+			counts.succeeded += 1
+		} else if err.message == "" {
+			counts.empty += 1
+		} else if err.message == sqlite.db_errstr(err.code) {
+			// The fallback text: the connection's error state was read while
+			// another thread's call had cleared it.
+			counts.generic += 1
+		} else {
+			owner := shared_conn_message_owner(err.message)
+			if owner >= 0 && err.code == int(raw.ERROR) {
+				if owner == tid {
+					counts.own += 1
+				} else {
+					counts.other += 1
+				}
+			} else {
+				if counts.malformed == 0 {
+					counts.sample_len = len(err.message)
+					copy(counts.sample[:], err.message)
+				}
+				counts.malformed += 1
+			}
+		}
+		sqlite.error_destroy(&err)
+	}
+}
+
+test_connection_shared_across_threads_errors_are_well_formed :: proc() {
+	if raw.threadsafe() == 0 {
+		// A single-thread SQLite build ignores OPEN_FULLMUTEX; sharing a
+		// connection across threads is unsupported there.
+		fmt.println("  skipped: SQLite was built with SQLITE_THREADSAFE=0")
+		return
+	}
+
+	state := new(Shared_Conn_State)
+	defer free(state)
+
+	db, open_err, open_ok := sqlite.db_open(":memory:")
+	expect_no_error(open_err, open_ok, "opening in-memory db should succeed")
+	state.db = db
+	defer sqlite.db_close_cleanup(&state.db)
+	expect_true(raw.db_mutex(db.handle) != nil, "default open flags should give the connection a mutex (FULLMUTEX)")
+
+	sync.barrier_init(&state.start, SHARED_CONN_THREADS)
+	threads: [SHARED_CONN_THREADS]^thread.Thread
+	for tid in 0 ..< SHARED_CONN_THREADS {
+		// No init_context: the worker must not inherit the tracking allocator.
+		threads[tid] = thread.create_and_start_with_poly_data2(state, tid, shared_conn_worker)
+		expect_true(threads[tid] != nil, "creating worker thread %d should succeed", tid)
+	}
+	for t in threads {
+		thread.destroy(t)
+	}
+
+	total: Shared_Conn_Counts
+	for counts, tid in state.counts {
+		total.own += counts.own
+		total.other += counts.other
+		total.succeeded += counts.succeeded
+		total.empty += counts.empty
+		total.generic += counts.generic
+		total.malformed += counts.malformed
+		if counts.malformed > 0 && total.sample_len == 0 {
+			total.sample_len = counts.sample_len
+			total.sample = counts.sample
+		}
+		expect_eq(counts.own + counts.other + counts.succeeded + counts.empty + counts.generic + counts.malformed, SHARED_CONN_ITERATIONS, "thread %d should account for every call", tid)
+	}
+
+	sample := string(total.sample[:min(total.sample_len, len(total.sample))])
+	summary := fmt.tprintf("own=%d other_thread=%d succeeded=%d empty=%d generic=%d malformed=%d first_malformed(len=%d)=%q",
+		total.own, total.other, total.succeeded, total.empty, total.generic, total.malformed, total.sample_len, sample)
+	expect_eq(total.succeeded, 0, "every call should fail: %s", summary)
+	expect_eq(total.malformed, 0, "every Error message must be a complete SQLite message: %s", summary)
+	expect_eq(total.empty, 0, "no Error may have an empty message: %s", summary)
+	expect_eq(total.generic, 0, "every failing call leaves a message on the connection, so no Error may fall back to the generic text: %s", summary)
 }

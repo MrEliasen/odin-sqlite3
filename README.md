@@ -153,6 +153,10 @@ In release archives, examples live under `examples/`.
 - Parameterize data values. Savepoint helpers reject unsafe identifier text.
 - Connections use SQLite's serialized `OPEN_FULLMUTEX` mode by default. Caches
   and trace configuration still require external synchronization when shared.
+- SQLite keeps one error state per connection. When threads share a
+  connection, a returned `Error` is always complete but may describe another
+  thread's failed call. Use one connection per thread when exact error
+  messages matter.
 
 See the executable
 [ownership example](packaging/examples/common_patterns/ownership_and_cleanup/main.odin)

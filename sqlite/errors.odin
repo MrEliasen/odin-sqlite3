@@ -180,6 +180,14 @@ error_from_db :: proc(db: DB, code: int, sql: string = "") -> Error {
 	}
 
 	if db.handle != nil {
+		// sqlite3_errmsg's buffer is freed by the next API call on this
+		// connection, which in serialized (FULLMUTEX) mode may come from another
+		// thread. Hold the connection mutex until the message is copied. It is
+		// recursive, and NULL (a no-op) for connections opened without a mutex.
+		mutex := raw.db_mutex(db.handle)
+		raw.mutex_enter(mutex)
+		defer raw.mutex_leave(mutex)
+
 		// `connection_code` may be primary or extended depending on whether
 		// `sqlite3_extended_result_codes` is enabled on the connection. We
 		// trust SQLite-state-driven enrichment only when the supplied code is
