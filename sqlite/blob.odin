@@ -105,7 +105,12 @@ blob_close :: proc(blob: ^Blob) -> (Error, bool) {
 	close_err := error_none()
 	close_ok := true
 	if rc != raw.OK {
-		close_err, close_ok = blob_result_from_blob(blob^, int(rc))
+		// sqlite3_blob_close finalizes the blob's statement, which frees a
+		// connection already closed with db_close (sqlite3_close_v2). The
+		// connection must not be read, so build the error from the code.
+		closed_blob := blob^
+		closed_blob.db = nil
+		close_err, close_ok = blob_result_from_blob(closed_blob, int(rc))
 		error_with_op(&close_err, "blob_close")
 	}
 

@@ -206,3 +206,37 @@ test_connection_cache_destroy_after_close_reports_failure :: proc() {
 	expect_eq(destroy_err.message, sqlite.db_errstr(int(raw.ERROR)), "finalize of a closed connection's statement can only report the generic text")
 	expect_eq(sqlite.cache_count(cache), 0, "cache should be empty after destroy")
 }
+
+// sqlite3_blob_close finalizes the blob's statement. When the connection was
+// already closed with db_close, that frees the connection, so blob_close must
+// build its error without reading it. A vetoing commit hook makes the implicit
+// commit at blob_close fail, so there is an error to report.
+test_connection_blob_close_after_close_reports_commit_failure :: proc() {
+	test_db := test_db_open("connection_blob_close_after_close")
+	defer test_db_close(&test_db)
+
+	exec_ok(test_db.db, "CREATE TABLE blob_zombie(id INTEGER PRIMARY KEY, payload BLOB NOT NULL)")
+	exec_ok(test_db.db, "INSERT INTO blob_zombie(payload) VALUES (zeroblob(4))")
+
+	blob, open_err, open_ok := sqlite.blob_open(test_db.db, "main", "blob_zombie", "payload", 1, .ReadWrite)
+	expect_no_error(open_err, open_ok, "blob_open read-write should succeed")
+	write_err, write_ok := sqlite.blob_write(blob, []u8{1, 2, 3, 4})
+	expect_no_error(write_err, write_ok, "blob_write should succeed")
+
+	raw.commit_hook(test_db.db.handle, proc "c" (_: rawptr) -> i32 { return 1 }, nil)
+
+	close_err, close_ok := sqlite.db_close(&test_db.db)
+	expect_no_error(close_err, close_ok, "db_close should succeed and leave a zombie while the blob is open")
+
+	blob_err, blob_ok := sqlite.blob_close(&blob)
+	defer sqlite.error_destroy(&blob_err)
+	expect_false(blob_ok, "blob_close should report the vetoed commit")
+	expect_eq(blob_err.code, int(raw.CONSTRAINT), "blob_close error code: %s", sqlite.error_string(blob_err))
+	expect_eq(blob_err.extended_code, int(raw.CONSTRAINT_COMMITHOOK), "blob_close extended code: %s", sqlite.error_string(blob_err))
+	expect_false(sqlite.blob_is_valid(blob), "blob should be invalid after blob_close")
+
+	test_db_reopen(&test_db)
+	payload, payload_err, payload_ok := sqlite.db_scalar_text(test_db.db, "SELECT hex(payload) FROM blob_zombie WHERE id = 1", allocator = context.temp_allocator)
+	expect_no_error(payload_err, payload_ok, "reading the payload back should succeed")
+	expect_eq(payload, "00000000", "the vetoed blob write must have been rolled back")
+}
