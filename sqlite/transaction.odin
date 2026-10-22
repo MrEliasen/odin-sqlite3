@@ -107,6 +107,14 @@ db_with_transaction :: proc(db: DB, body: proc(db: DB) -> (Error, bool)) -> (Err
 
 	body_err, body_ok := body(db)
 	if !body_ok {
+		// Some failures end the transaction before control returns here (OR
+		// ROLLBACK conflicts, RAISE(ROLLBACK), and some FULL/IOERR/NOMEM/BUSY/
+		// INTERRUPT errors). sqlite3_get_autocommit is SQLite's documented way
+		// to detect that. ROLLBACK would then fail with "no transaction is
+		// active" and hide the body's error, so return the body's error.
+		if !db_in_transaction(db) {
+			return body_err, false
+		}
 		rollback_err, rollback_ok := db_rollback(db)
 		if !rollback_ok {
 			error_destroy(&body_err)
@@ -132,6 +140,13 @@ db_with_savepoint :: proc(db: DB, name: string, body: proc(db: DB) -> (Error, bo
 
 	body_err, body_ok := body(db)
 	if !body_ok {
+		// If the body's failure already rolled back the whole transaction (see
+		// db_with_transaction), SQLite has closed every savepoint. ROLLBACK TO
+		// and RELEASE would both fail with "no such savepoint" and hide the
+		// body's error, so return it directly.
+		if !db_in_transaction(db) {
+			return body_err, false
+		}
 		rollback_err, rollback_ok := db_rollback_to(db, name)
 		if !rollback_ok {
 			// Best effort: RELEASE may still clear a surviving savepoint. Keep

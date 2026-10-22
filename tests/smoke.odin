@@ -73,6 +73,8 @@ run_transaction_tests :: proc() {
 	run_test("transaction_with_transaction_helper", test_transaction_with_transaction_helper)
 	run_test("transaction_with_savepoint_helper", test_transaction_with_savepoint_helper)
 	run_test("failed_top_level_savepoint_restores_autocommit", test_failed_top_level_savepoint_restores_autocommit)
+	run_test("transaction_helpers_return_body_error_after_auto_rollback", test_transaction_helpers_return_body_error_after_auto_rollback)
+	run_test("savepoint_helper_returns_body_error_after_auto_rollback", test_savepoint_helper_returns_body_error_after_auto_rollback)
 	run_test("transaction_invalid_savepoint_name_is_rejected", test_transaction_invalid_savepoint_name_is_rejected)
 	run_test("cache_prepare_reuse_and_clear", test_cache_prepare_reuse_and_clear)
 	run_test("cache_usage_tracking_and_prune_unused", test_cache_usage_tracking_and_prune_unused)

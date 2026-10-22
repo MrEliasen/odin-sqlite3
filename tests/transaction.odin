@@ -506,3 +506,92 @@ test_cache_is_connection_and_prepare_flags_safe :: proc() {
 	destroy_err, destroy_ok := sqlite.cache_destroy(&cache)
 	expect_no_error(destroy_err, destroy_ok, "cache cleanup should succeed before closing either DB")
 }
+
+// Some failures make SQLite roll back the whole transaction itself (OR ROLLBACK
+// conflicts, RAISE(ROLLBACK), some FULL/IOERR/NOMEM errors). The helper's own
+// ROLLBACK then has nothing to undo; the caller must still see the body's error.
+@(private = "file")
+auto_rollback_body :: proc(db: sqlite.DB) -> (sqlite.Error, bool) {
+	insert_err, insert_ok := sqlite.db_exec(db, "INSERT INTO auto_rb(id) VALUES (2)")
+	expect_no_error(insert_err, insert_ok, "insert before the conflicting statement should succeed")
+	return sqlite.db_exec(db, "INSERT OR ROLLBACK INTO auto_rb(id) VALUES (1)")
+}
+
+@(private = "file")
+trigger_rollback_body :: proc(db: sqlite.DB) -> (sqlite.Error, bool) {
+	insert_err, insert_ok := sqlite.db_exec(db, "INSERT INTO auto_rb(id) VALUES (3)")
+	expect_no_error(insert_err, insert_ok, "insert before the trigger should succeed")
+	return sqlite.db_exec(db, "INSERT INTO auto_rb_trigger(x) VALUES ('boom')")
+}
+
+@(private = "file")
+auto_rollback_db_open :: proc(test_name: string) -> Test_DB {
+	test_db := test_db_open(test_name)
+	exec_ok(test_db.db, "CREATE TABLE auto_rb(id INTEGER PRIMARY KEY)")
+	exec_ok(test_db.db, "INSERT INTO auto_rb(id) VALUES (1)")
+	exec_ok(test_db.db, "CREATE TABLE auto_rb_trigger(x TEXT)")
+	exec_ok(test_db.db, "CREATE TRIGGER auto_rb_raise BEFORE INSERT ON auto_rb_trigger BEGIN SELECT RAISE(ROLLBACK, 'trigger forced rollback'); END")
+	return test_db
+}
+
+@(private = "file")
+expect_only_seed_row :: proc(db: sqlite.DB, message: string) {
+	count, err, ok := sqlite.db_scalar_i64(db, "SELECT COUNT(*) FROM auto_rb")
+	expect_no_error(err, ok, "%s: count should succeed", message)
+	expect_eq(count, i64(1), "%s: only the committed seed row should remain", message)
+}
+
+test_transaction_helpers_return_body_error_after_auto_rollback :: proc() {
+	{
+		test_db := auto_rollback_db_open("tx_helper_or_rollback")
+		defer test_db_close(&test_db)
+
+		err, ok := sqlite.db_with_transaction(test_db.db, auto_rollback_body)
+		defer sqlite.error_destroy(&err)
+		expect_false(ok, "db_with_transaction should report the body failure")
+		expect_eq(err.code, int(raw.CONSTRAINT), "OR ROLLBACK conflict must surface the body's error, not the helper's ROLLBACK error: %s", sqlite.error_string(err))
+		expect_eq(err.extended_code, int(raw.CONSTRAINT_PRIMARYKEY), "extended code should identify the primary-key conflict")
+		expect_false(sqlite.db_in_transaction(test_db.db), "transaction should be over")
+		expect_only_seed_row(test_db.db, "db_with_transaction + OR ROLLBACK")
+	}
+	{
+		test_db := auto_rollback_db_open("tx_helper_raise_rollback")
+		defer test_db_close(&test_db)
+
+		err, ok := sqlite.db_with_transaction(test_db.db, trigger_rollback_body)
+		defer sqlite.error_destroy(&err)
+		expect_false(ok, "db_with_transaction should report the trigger failure")
+		expect_eq(err.extended_code, int(raw.CONSTRAINT_TRIGGER), "RAISE(ROLLBACK) must surface the trigger's error: %s", sqlite.error_string(err))
+		expect_string_contains(err.message, "trigger forced rollback", "trigger message should be preserved")
+		expect_only_seed_row(test_db.db, "db_with_transaction + RAISE(ROLLBACK)")
+	}
+}
+
+test_savepoint_helper_returns_body_error_after_auto_rollback :: proc() {
+	{
+		test_db := auto_rollback_db_open("sp_helper_top_level_or_rollback")
+		defer test_db_close(&test_db)
+
+		err, ok := sqlite.db_with_savepoint(test_db.db, "sp_auto", auto_rollback_body)
+		defer sqlite.error_destroy(&err)
+		expect_false(ok, "db_with_savepoint should report the body failure")
+		expect_eq(err.extended_code, int(raw.CONSTRAINT_PRIMARYKEY), "top-level savepoint must surface the body's error, not 'no such savepoint': %s", sqlite.error_string(err))
+		expect_false(sqlite.db_in_transaction(test_db.db), "top-level savepoint transaction should be over")
+		expect_only_seed_row(test_db.db, "top-level db_with_savepoint + OR ROLLBACK")
+	}
+	{
+		test_db := auto_rollback_db_open("sp_helper_nested_raise_rollback")
+		defer test_db_close(&test_db)
+
+		exec_ok(test_db.db, "BEGIN")
+		exec_ok(test_db.db, "INSERT INTO auto_rb(id) VALUES (5)")
+
+		err, ok := sqlite.db_with_savepoint(test_db.db, "sp_auto", trigger_rollback_body)
+		defer sqlite.error_destroy(&err)
+		expect_false(ok, "nested db_with_savepoint should report the trigger failure")
+		expect_eq(err.extended_code, int(raw.CONSTRAINT_TRIGGER), "nested savepoint must surface the trigger's error: %s", sqlite.error_string(err))
+		// RAISE(ROLLBACK) ends the outer transaction too; that is SQLite's behaviour.
+		expect_false(sqlite.db_in_transaction(test_db.db), "RAISE(ROLLBACK) should have ended the outer transaction")
+		expect_only_seed_row(test_db.db, "nested db_with_savepoint + RAISE(ROLLBACK)")
+	}
+}
