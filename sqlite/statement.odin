@@ -118,7 +118,13 @@ stmt_clear_bindings :: proc(stmt: ^Stmt) -> (Error, bool) {
 	}
 
 	rc := raw.clear_bindings(stmt.handle)
-	if rc == raw.OK {
+	// SQLite allows clearing the bindings of a running statement, but values
+	// that execution already copied out of a parameter (such as the current
+	// row's columns) still point into the SQLITE_STATIC storage until the
+	// statement is reset or finishes. Free the storage only once nothing can
+	// reference it; while running it stays tracked and is released by the next
+	// rebind of its slot, a later stmt_clear_bindings, or stmt_finalize.
+	if rc == raw.OK && raw.stmt_busy(stmt.handle) == 0 {
 		stmt_clear_bound_storage(stmt)
 	}
 	return result_from_stmt(stmt^, int(rc))

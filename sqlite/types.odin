@@ -23,9 +23,10 @@ Stmt :: struct {
 	// bound_text_storage / bound_blob_storage hold per-parameter-slot copies of
 	// caller text/blob values. They are passed to sqlite3_bind_text /
 	// sqlite3_bind_blob with SQLITE_STATIC, so SQLite reads from these slices
-	// until the statement is reset/finalized or the slot is rebound. Rebinding
-	// a slot frees its prior entry — see `stmt_bind_track_text` /
-	// `stmt_bind_track_blob` in bind.odin.
+	// until the slot is rebound, the bindings are cleared, or the statement is
+	// finalized (sqlite3_reset keeps bindings). Rebinding a slot frees its prior
+	// entry, and stmt_clear_bindings defers freeing while the statement is
+	// still running — see bind.odin and stmt_clear_bindings.
 	bound_text_storage: map[i32]cstring,
 	bound_blob_storage: map[i32][]u8,
 	// allocator owns `sql` and the bound text/blob copies above. It is captured

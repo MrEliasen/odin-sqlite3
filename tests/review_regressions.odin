@@ -8,8 +8,8 @@ import raw "../sqlite/raw/generated"
 
 // Regression tests for defects found in the wrapper review: DB copies sharing
 // trace storage, 32-bit boolean reads, UTF-16 struct fields, a column index
-// built before re-prepare, embedded NUL truncation, and per-row
-// temp-allocator growth.
+// built before re-prepare, embedded NUL truncation, per-row temp-allocator
+// growth, and clearing the bindings of a running statement.
 
 run_review_regression_tests :: proc() {
 	run_test("trace_config_survives_db_copies", test_trace_config_survives_db_copies)
@@ -20,6 +20,7 @@ run_review_regression_tests :: proc() {
 	run_test("embedded_nul_open_path_is_rejected", test_embedded_nul_open_path_is_rejected)
 	run_test("embedded_nul_parameter_name_is_rejected", test_embedded_nul_parameter_name_is_rejected)
 	run_test("scan_struct_does_not_grow_temp_allocator", test_scan_struct_does_not_grow_temp_allocator)
+	run_test("clear_bindings_on_running_statement_keeps_row_data", test_clear_bindings_on_running_statement_keeps_row_data)
 }
 
 Review_App :: struct {
@@ -302,4 +303,30 @@ test_scan_struct_does_not_grow_temp_allocator :: proc() {
 	expect_eq(temp_tracker.total_allocation_count, 0, "per-row scans must not allocate from context.temp_allocator")
 	expect_eq(heap_tracker.current_memory_allocated, 0, "per-call scratch must be released before stmt_scan_struct returns")
 	expect_eq(len(heap_tracker.bad_free_array), 0, "per-call scratch must be freed with its own allocator")
+}
+
+// sqlite3_clear_bindings is allowed on a running statement, but the current
+// row still points into the SQLITE_STATIC buffers. The wrapper used to free
+// them immediately, so reading the row read freed memory.
+test_clear_bindings_on_running_statement_keeps_row_data :: proc() {
+	test_db := test_db_open("clear_bindings_on_running_statement_keeps_row_data")
+	defer test_db_close(&test_db)
+
+	sql := "SELECT ?1 FROM (VALUES (1), (2))"
+	stmt := prepare_ok(test_db.db, sql)
+	defer finalize_ok(&stmt, sql)
+
+	value := "bound with SQLITE_STATIC and read after clear_bindings"
+	bind_text_ok(&stmt, 1, value, sql)
+	step_expect_row(stmt, sql)
+
+	clear_bindings_ok(&stmt, sql)
+	expect_eq(sqlite.stmt_get_text(stmt, 0, context.temp_allocator), value, "the current row must still read the bound value")
+	expect_eq(len(stmt.bound_text_storage), 1, "storage the running statement references must stay allocated")
+
+	reset_ok(&stmt, sql)
+	clear_bindings_ok(&stmt, sql)
+	expect_eq(len(stmt.bound_text_storage), 0, "clearing an idle statement releases the storage")
+	step_expect_row(stmt, sql)
+	expect_true(sqlite.stmt_is_null(stmt, 0), "the cleared parameter reads back as NULL")
 }
