@@ -32,7 +32,8 @@ SQLITE_LIB :: #config(SQLITE_LIB, DEFAULT_SQLITE_LIB)
 // links. Enable only the features exported by the chosen SQLITE_LIB, e.g.:
 //
 //   -define:SQLITE_HAS_PREUPDATE_API=true        (SQLITE_ENABLE_PREUPDATE_HOOK)
-//   -define:SQLITE_HAS_SESSION_API=true          (SQLITE_ENABLE_SESSION)
+//   -define:SQLITE_HAS_SESSION_API=true          (SQLITE_ENABLE_SESSION and
+//                                                 SQLITE_ENABLE_PREUPDATE_HOOK)
 //   -define:SQLITE_HAS_NORMALIZE_API=true        (SQLITE_ENABLE_NORMALIZE)
 //   -define:SQLITE_HAS_COLUMN_METADATA_API=true  (SQLITE_ENABLE_COLUMN_METADATA)
 //   -define:SQLITE_HAS_UNLOCK_NOTIFY_API=true    (SQLITE_ENABLE_UNLOCK_NOTIFY)
@@ -41,10 +42,11 @@ SQLITE_LIB :: #config(SQLITE_LIB, DEFAULT_SQLITE_LIB)
 //   -define:SQLITE_HAS_DEBUG_MUTEX_API=true      (SQLITE_DEBUG builds only)
 //   -define:SQLITE_HAS_CARRAY_API=true           (SQLITE_ENABLE_CARRAY)
 //
-// sqlite3_mutex_held() and sqlite3_mutex_notheld() exist only in SQLITE_DEBUG
-// builds, because SQLite defines NDEBUG otherwise. The
-// sqlite3_win32_set_directory*() functions are declared only when
-// ODIN_OS == .Windows.
+// SQLite compiles the session extension only when SQLITE_ENABLE_SESSION and
+// SQLITE_ENABLE_PREUPDATE_HOOK are both defined. sqlite3_mutex_held() and
+// sqlite3_mutex_notheld() exist only in SQLITE_DEBUG builds, because SQLite
+// defines NDEBUG otherwise. The sqlite3_win32_set_directory*() functions are
+// declared only when ODIN_OS == .Windows.
 //
 // Homebrew SQLite 3.53.1 exports preupdate, session, column-metadata, and
 // unlock-notify (72 symbols total), but not normalize, statement scan-status,

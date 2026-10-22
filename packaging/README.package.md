@@ -62,7 +62,8 @@ statement-scan-status, and snapshot families, then runs a probe that strongly
 references every ungated symbol plus the 81 symbols behind those gates and
 checks that every loaded address is non-null on Linux, macOS, and Windows. The
 `SQLITE_HAS_DEBUG_MUTEX_API` (`SQLITE_DEBUG`) and `SQLITE_HAS_CARRAY_API`
-(`SQLITE_ENABLE_CARRAY`) gates are not part of that build. This proves the symbols link and load; it does not functionally invoke
+(`SQLITE_ENABLE_CARRAY`) gates are not part of that build. Session APIs require
+both `SQLITE_ENABLE_SESSION` and `SQLITE_ENABLE_PREUPDATE_HOOK`. This proves the symbols link and load; it does not functionally invoke
 those APIs. The separate cross-target checks are compile-only and do not claim
 runtime compatibility.
 
