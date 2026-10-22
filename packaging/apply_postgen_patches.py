@@ -39,12 +39,15 @@ PINNED_SQLITE_HEADER = PROJECT_ROOT / "input" / "sqlite3.h"
 SQLITE_LIBRARY_COLLECTION = "sqlitelib"
 
 
-# odin-c-bindgen currently records the first (forward) declaration of these
-# public SQLite records and then ignores the later definition.  Keep the
-# canonical Odin spellings here so regeneration is deterministic.  Opaque
-# handle types such as Sqlite3, Stmt, Value, and Session intentionally remain
-# empty; only records whose fields are part of SQLite's public C ABI appear in
-# this table.
+# With libclang 22 (Homebrew), odin-c-bindgen records the first (forward)
+# declaration of these public SQLite records and then ignores the later
+# definition, emitting an empty placeholder. With libclang 18-21 (e.g. Ubuntu
+# 24.04 CI) it emits the full definition instead, with C parameter names,
+# comments, and generic types such as `^cstring` for FTS5 byte outputs. Both
+# forms are replaced with the canonical Odin spellings here so regeneration is
+# deterministic across libclang versions.  Opaque handle types such as
+# Sqlite3, Stmt, Value, and Session intentionally remain empty; only records
+# whose fields are part of SQLite's public C ABI appear in this table.
 CONCRETE_STRUCTS: dict[str, str] = {
     "File": """struct {
 \tpMethods: ^Io_Methods,
@@ -898,8 +901,8 @@ def patch_generated_file() -> PatchResult:
         applied += count
 
     # 8. Restore all public, concrete record layouts that bindgen reduced to
-    # forward-declaration placeholders. Helper callback aliases are inserted
-    # once before the first record declaration.
+    # forward-declaration placeholders, or emitted in its own spelling. Helper
+    # callback aliases are inserted once before the first record declaration.
     helper_block = STRUCT_HELPER_TYPES.strip()
     if helper_block not in text:
         file_decl = re.search(r"(?m)^File\s+:: struct", text)
@@ -909,14 +912,26 @@ def patch_generated_file() -> PatchResult:
         applied += 1
 
     for name, definition in CONCRETE_STRUCTS.items():
-        empty_pattern = rf"(?m)^{re.escape(name)}\s+:: struct \{{\}}$"
-        matches = list(re.finditer(empty_pattern, text))
+        # Either an empty placeholder or a full body ending at a column-0 `}`.
+        declaration_pattern = (
+            rf"(?m)^{re.escape(name)}\s+:: struct \{{(?:\}}|\n(?:.*\n)*?\}})$"
+        )
+        matches = list(re.finditer(declaration_pattern, text))
         if len(matches) > 1:
-            fail(f"expected at most one empty declaration for {name}, found {len(matches)}")
-        if matches:
-            replacement = f"{name} :: {definition}"
-            text = re.sub(empty_pattern, lambda _: replacement, text, count=1)
-            applied += 1
+            fail(f"expected at most one declaration for {name}, found {len(matches)}")
+        replacement = f"{name} :: {definition}"
+        if not matches or matches[0].group(0) == replacement:
+            continue
+        declaration = matches[0].group(0)
+        if not declaration.endswith("{}"):
+            field_names = re.findall(r"(?m)^\t(\w+):", declaration)
+            if field_names != re.findall(r"(?m)^\t(\w+):", definition):
+                fail(
+                    f"generated {name} fields do not match the canonical definition: "
+                    f"{field_names}"
+                )
+        text = text[: matches[0].start()] + replacement + text[matches[0].end() :]
+        applied += 1
 
     # 9. Gate declarations whose symbols only exist in feature-enabled SQLite
     # builds. The header defines control source visibility during bindgen;
@@ -1273,6 +1288,9 @@ def patch_generated_file() -> PatchResult:
             fail(f"post-patch verification failed: concrete struct {name} is still empty")
         if not re.search(rf"(?m)^{re.escape(name)}\s+:: struct \{{", text):
             fail(f"post-patch verification failed: concrete struct {name} is missing")
+    for name, definition in CONCRETE_STRUCTS.items():
+        if f"{name} :: {definition}" not in text:
+            fail(f"post-patch verification failed: concrete struct {name} is not canonical")
 
     for gate in FEATURE_GATED_API_SYMBOLS:
         if f"when {gate} {{" not in text:
