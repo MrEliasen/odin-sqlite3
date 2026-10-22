@@ -2,13 +2,15 @@ package tests
 
 import "core:mem"
 import sqlite "../sqlite"
+import raw "../sqlite/raw/generated"
 
 // Regression tests for defects found in the wrapper review: DB copies sharing
-// trace storage and 32-bit boolean reads.
+// trace storage, 32-bit boolean reads, and UTF-16 struct fields.
 
 run_review_regression_tests :: proc() {
 	run_test("trace_config_survives_db_copies", test_trace_config_survives_db_copies)
 	run_test("column_get_bool_uses_sqlite_truthiness", test_column_get_bool_uses_sqlite_truthiness)
+	run_test("row_mapping_rejects_utf16_string_fields", test_row_mapping_rejects_utf16_string_fields)
 }
 
 Review_App :: struct {
@@ -76,4 +78,37 @@ test_column_get_bool_uses_sqlite_truthiness :: proc() {
 	err, ok := sqlite.db_query_one_struct(test_db.db, "SELECT 4294967296 AS flag", &row)
 	expect_no_error(err, ok, "map a 64-bit integer into a bool field")
 	expect_true(row.flag, "struct bool fields use the same truth test")
+}
+
+Review_String16_Row :: struct {
+	id:   i64,
+	name: string16,
+}
+
+Review_String16_Unmapped_Row :: struct {
+	id:   i64,
+	note: string16,
+}
+
+// A string16 field used to receive a byte-length UTF-8 string, so readers saw
+// twice as many bytes as were allocated. UTF-16 fields are rejected like
+// cstring fields.
+test_row_mapping_rejects_utf16_string_fields :: proc() {
+	test_db := test_db_open("row_mapping_rejects_utf16_string_fields")
+	defer test_db_close(&test_db)
+
+	row := Review_String16_Row{id = 99}
+	err, ok := sqlite.db_query_one_struct(test_db.db, "SELECT 1 AS id, 'hello' AS name", &row)
+	expect_error(&err, ok, int(raw.MISUSE), "a mapped string16 field must be rejected")
+	expect_eq(row.id, i64(99), "a rejected scan must leave the destination unchanged")
+	expect_eq(len(row.name), 0, "a rejected scan must not write the string16 field")
+
+	rows, all_err, all_ok := sqlite.db_query_all_struct(test_db.db, "SELECT 1 AS id, 'hello' AS name", Review_String16_Row)
+	expect_error(&all_err, all_ok, int(raw.MISUSE), "db_query_all_struct must reject string16 fields too")
+	expect_true(rows == nil, "a rejected query returns no rows")
+
+	unmapped := Review_String16_Unmapped_Row{}
+	unmapped_err, unmapped_ok := sqlite.db_query_one_struct(test_db.db, "SELECT 7 AS id", &unmapped)
+	expect_no_error(unmapped_err, unmapped_ok, "an unmapped string16 field is ignored like any unmapped field")
+	expect_eq(unmapped.id, i64(7), "mapped fields still decode")
 }

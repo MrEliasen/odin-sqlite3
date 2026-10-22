@@ -387,7 +387,7 @@ row_mapping_preflight_commit :: proc(
 		non_empty := false
 		#partial switch field_variant in field_info.variant {
 		case reflect.Type_Info_String:
-			if !field_variant.is_cstring {
+			if row_mapping_string_field_supported(field_variant) {
 				non_empty = len((^string)(field_ptr)^) > 0
 			}
 		case reflect.Type_Info_Slice:
@@ -446,7 +446,7 @@ row_mapping_commit_struct :: proc(
 		if replace_mode == .Delete_Existing {
 			#partial switch field_variant in field_info.variant {
 			case reflect.Type_Info_String:
-				if !field_variant.is_cstring {
+				if row_mapping_string_field_supported(field_variant) {
 					old := (^string)(dst_field)
 					if len(old^) > 0 {
 						delete(old^, allocator)
@@ -501,7 +501,7 @@ row_mapping_free_struct_owned :: proc(
 
 		#partial switch field_variant in field_info.variant {
 		case reflect.Type_Info_String:
-			if field_variant.is_cstring {
+			if !row_mapping_string_field_supported(field_variant) {
 				continue
 			}
 			s_ptr := (^string)(field_ptr)
@@ -800,6 +800,16 @@ row_mapping_assign_bool :: proc(
 	return error_none(), true
 }
 
+// row_mapping_string_field_supported reports whether a string field has the
+// layout of an Odin UTF-8 `string`, the only string type row mapping writes,
+// compares, and frees. cstring and UTF-16 (string16/cstring16) fields are
+// rejected: a byte-length UTF-8 string stored in a string16 would claim twice
+// as many bytes as were allocated.
+@(private)
+row_mapping_string_field_supported :: proc(field_variant: reflect.Type_Info_String) -> bool {
+	return !field_variant.is_cstring && field_variant.encoding == .UTF_8
+}
+
 row_mapping_assign_string :: proc(
 	field_ptr: rawptr,
 	field_variant: reflect.Type_Info_String,
@@ -812,6 +822,12 @@ row_mapping_assign_string :: proc(
 		err := error_from_stmt(stmt, int(raw.MISUSE))
 		error_with_op(&err, row_mapping_op)
 		error_with_context(&err, row_mapping_field_error_context("cstring fields are not supported by struct row mapping", field, column_index))
+		return err, false
+	}
+	if !row_mapping_string_field_supported(field_variant) {
+		err := error_from_stmt(stmt, int(raw.MISUSE))
+		error_with_op(&err, row_mapping_op)
+		error_with_context(&err, row_mapping_field_error_context("UTF-16 string fields are not supported by struct row mapping", field, column_index))
 		return err, false
 	}
 
