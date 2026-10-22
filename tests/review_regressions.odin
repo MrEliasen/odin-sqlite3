@@ -1,18 +1,24 @@
 package tests
 
 import "core:mem"
+import "core:os"
+import "core:strings"
 import sqlite "../sqlite"
 import raw "../sqlite/raw/generated"
 
 // Regression tests for defects found in the wrapper review: DB copies sharing
 // trace storage, 32-bit boolean reads, UTF-16 struct fields, a column index
-// built before re-prepare, and per-row temp-allocator growth.
+// built before re-prepare, embedded NUL truncation, and per-row
+// temp-allocator growth.
 
 run_review_regression_tests :: proc() {
 	run_test("trace_config_survives_db_copies", test_trace_config_survives_db_copies)
 	run_test("column_get_bool_uses_sqlite_truthiness", test_column_get_bool_uses_sqlite_truthiness)
 	run_test("row_mapping_rejects_utf16_string_fields", test_row_mapping_rejects_utf16_string_fields)
 	run_test("query_all_struct_maps_columns_after_reprepare", test_query_all_struct_maps_columns_after_reprepare)
+	run_test("embedded_nul_sql_is_rejected", test_embedded_nul_sql_is_rejected)
+	run_test("embedded_nul_open_path_is_rejected", test_embedded_nul_open_path_is_rejected)
+	run_test("embedded_nul_parameter_name_is_rejected", test_embedded_nul_parameter_name_is_rejected)
 	run_test("scan_struct_does_not_grow_temp_allocator", test_scan_struct_does_not_grow_temp_allocator)
 }
 
@@ -182,6 +188,70 @@ test_query_all_struct_maps_columns_after_reprepare :: proc() {
 	expect_eq(rows[0].a, i64(1), "a maps by name")
 	expect_eq(rows[0].b, "", "dropped column b has no value")
 	expect_eq(rows[0].c, "value-of-c", "c maps to its own column after re-prepare")
+}
+
+// SQLite reads SQL text as a C string, so everything after an embedded NUL was
+// silently dropped: this DELETE used to remove every row.
+test_embedded_nul_sql_is_rejected :: proc() {
+	test_db := test_db_open("embedded_nul_sql_is_rejected")
+	defer test_db_close(&test_db)
+	exec_ok(test_db.db, "CREATE TABLE nul_rows(id INTEGER PRIMARY KEY)")
+	exec_ok(test_db.db, "INSERT INTO nul_rows VALUES (1), (2), (3)")
+
+	sql := "DELETE FROM nul_rows\x00 WHERE id = 1"
+
+	err, ok := sqlite.db_exec(test_db.db, sql)
+	expect_error(&err, ok, int(raw.MISUSE), "db_exec must reject SQL containing NUL")
+	count, count_err, count_ok := sqlite.db_scalar_i64(test_db.db, "SELECT count(*) FROM nul_rows")
+	expect_no_error(count_err, count_ok, "count rows after db_exec")
+	expect_eq(count, i64(3), "db_exec must not run the truncated DELETE")
+
+	stmt, prep_err, prep_ok := sqlite.stmt_prepare(test_db.db, sql)
+	if prep_ok {
+		sqlite.stmt_step(stmt)
+		sqlite.stmt_finalize_cleanup(&stmt)
+	}
+	expect_error(&prep_err, prep_ok, int(raw.MISUSE), "stmt_prepare must reject SQL containing NUL")
+	count, count_err, count_ok = sqlite.db_scalar_i64(test_db.db, "SELECT count(*) FROM nul_rows")
+	expect_no_error(count_err, count_ok, "count rows after stmt_prepare")
+	expect_eq(count, i64(3), "stmt_prepare must not prepare the truncated DELETE")
+}
+
+// A path truncated at its NUL used to open (and create) a different file.
+test_embedded_nul_open_path_is_rejected :: proc() {
+	path := make_temp_db_path("embedded_nul_open_path_target")
+	defer delete(path)
+	remove_file_if_exists(path)
+
+	nul_path := strings.concatenate({path, "\x00.backup"}, context.temp_allocator)
+	db, err, ok := sqlite.db_open(nul_path)
+	if ok {
+		sqlite.db_close_cleanup(&db)
+	}
+	opened_truncated_path := os.exists(path)
+	remove_file_if_exists(path)
+	expect_error(&err, ok, int(raw.MISUSE), "db_open must reject a path containing NUL")
+	expect_false(opened_truncated_path, "db_open must not open the path truncated at the NUL")
+}
+
+// A parameter name truncated at its NUL used to bind a different parameter.
+// NUL bytes inside bound values are data and stay accepted.
+test_embedded_nul_parameter_name_is_rejected :: proc() {
+	test_db := test_db_open("embedded_nul_parameter_name_is_rejected")
+	defer test_db_close(&test_db)
+
+	sql := "SELECT :a, :ab"
+	stmt := prepare_ok(test_db.db, sql)
+	defer finalize_ok(&stmt, sql)
+
+	err, ok := sqlite.stmt_bind_named_text(&stmt, ":a\x00b", "wrong target")
+	expect_error(&err, ok, int(raw.MISUSE), "a parameter name containing NUL must be rejected")
+	expect_eq(sqlite.stmt_param_index(stmt, ":a\x00b"), 0, "no parameter matches a name containing NUL")
+
+	bind_text_ok(&stmt, 2, "x\x00y", sql)
+	step_expect_row(stmt, sql)
+	expect_true(sqlite.stmt_is_null(stmt, 0), ":a must stay unbound")
+	expect_eq(sqlite.stmt_get_text(stmt, 1, context.temp_allocator), "x\x00y", "NUL bytes inside bound text are preserved")
 }
 
 // stmt_scan_struct built its per-call column index on context.temp_allocator,

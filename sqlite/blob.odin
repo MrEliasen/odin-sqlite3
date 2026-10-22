@@ -39,6 +39,9 @@ blob_open :: proc(
 		error_with_context(&err, "schema, table, and column must be non-empty")
 		return Blob{}, err, false
 	}
+	if text_has_nul(schema) || text_has_nul(table) || text_has_nul(column) {
+		return Blob{}, error_embedded_nul(db, "blob_open", "schema, table, or column name"), false
+	}
 
 	// sqlite3_blob_open dereferences a nil table/column name (no API armor).
 	c_schema, schema_err := strings.clone_to_cstring(schema)

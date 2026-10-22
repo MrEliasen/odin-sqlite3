@@ -31,6 +31,10 @@ stmt_prepare :: proc(
 		error_with_context(&err, "prepare flags exceed SQLite's u32 range")
 		return Stmt{}, err, false
 	}
+	// sqlite3_prepare_v3 stops at a NUL even when nByte covers the rest.
+	if text_has_nul(sql) {
+		return Stmt{}, error_embedded_nul(db, "stmt_prepare", "SQL text", sql), false
+	}
 
 	stmt := Stmt{
 		db            = db.handle,

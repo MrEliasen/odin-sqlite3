@@ -7,6 +7,9 @@ db_exec :: proc(db: DB, sql: string) -> (Error, bool) {
 	if db.handle == nil {
 		return error_from_db(db, int(raw.MISUSE), sql), false
 	}
+	if text_has_nul(sql) {
+		return error_embedded_nul(db, "db_exec", "SQL text", sql), false
+	}
 
 	// sqlite3_exec treats a nil zSql as "" and returns OK, so an allocation
 	// failure here would silently skip BEGIN/COMMIT/ROLLBACK.

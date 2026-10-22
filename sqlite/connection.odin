@@ -17,6 +17,12 @@ db_open :: proc(path: string, flags: int = DEFAULT_OPEN_FLAGS, vfs: string = "")
 		error_with_op(&err, "db_open")
 		return DB{}, err, false
 	}
+	if text_has_nul(path) {
+		return DB{}, error_embedded_nul(DB{}, "db_open", "database path"), false
+	}
+	if text_has_nul(vfs) {
+		return DB{}, error_embedded_nul(DB{}, "db_open", "VFS name"), false
+	}
 
 	// A nil filename makes SQLite open a private temporary database, and a nil
 	// VFS name selects the default VFS, so allocation failure must not reach

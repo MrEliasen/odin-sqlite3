@@ -166,6 +166,26 @@ error_alloc :: proc(op: string, alloc_err: runtime.Allocator_Error) -> Error {
 	return err
 }
 
+// text_has_nul reports whether `text` contains a NUL byte. SQLite reads SQL,
+// filenames, VFS/schema/table/column names, and parameter names as C strings,
+// so it would silently ignore everything after an embedded NUL: "DELETE FROM
+// t\x00 WHERE id = 1" would delete every row. Such text is rejected before any
+// cstring conversion. Bound text/blob values are passed with an explicit
+// length and may contain NUL bytes.
+@(private)
+text_has_nul :: proc(text: string) -> bool {
+	return strings.index_byte(text, 0) >= 0
+}
+
+// error_embedded_nul builds the SQLITE_MISUSE error for text_has_nul.
+@(private)
+error_embedded_nul :: proc(db: DB, op: string, argument: string, sql: string = "") -> Error {
+	err := error_from_db(db, int(raw.MISUSE), sql)
+	error_with_op(&err, op)
+	error_with_context(&err, fmt.tprintf("%s contains a NUL byte; SQLite would ignore everything after it", argument))
+	return err
+}
+
 // error_from_db builds an Error from a SQLite return code, cloning the
 // connection's error message into the returned Error. `sql` is also cloned if
 // non-empty.

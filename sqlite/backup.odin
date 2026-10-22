@@ -65,6 +65,9 @@ backup_init :: proc(
 		error_with_context(&err, "source and destination schema names must be non-empty")
 		return Backup{}, err, false
 	}
+	if text_has_nul(dst_schema) || text_has_nul(src_schema) {
+		return Backup{}, error_embedded_nul(dst_db, "backup_init", "source or destination schema name"), false
+	}
 
 	c_dst_schema, dst_err := strings.clone_to_cstring(dst_schema)
 	defer delete(c_dst_schema)

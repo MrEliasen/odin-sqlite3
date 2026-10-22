@@ -291,8 +291,11 @@ stmt_param_count :: proc(stmt: Stmt) -> int {
 	return int(raw.bind_parameter_count(stmt.handle))
 }
 
+// stmt_param_index returns the 1-based index of the parameter called `name`,
+// or 0 when there is none. A name containing a NUL byte matches nothing (it
+// would otherwise be truncated and could match a different parameter).
 stmt_param_index :: proc(stmt: Stmt, name: string) -> int {
-	if stmt.handle == nil || name == "" {
+	if stmt.handle == nil || name == "" || text_has_nul(name) {
 		return 0
 	}
 
@@ -325,6 +328,9 @@ stmt_bind_named_index :: proc(stmt: ^Stmt, name: string) -> (int, Error, bool) {
 	if stmt == nil || stmt.handle == nil {
 		err, _ := stmt_bind_error(Stmt{})
 		return 0, err, false
+	}
+	if text_has_nul(name) {
+		return 0, error_embedded_nul(DB{handle = stmt.db}, "stmt_bind_named", "parameter name", stmt.sql), false
 	}
 	index := stmt_param_index(stmt^, name)
 	if index == 0 {

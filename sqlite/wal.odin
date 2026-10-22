@@ -17,6 +17,9 @@ db_wal_checkpoint :: proc(
 	if db.handle == nil {
 		return Wal_Checkpoint_Result{}, error_from_db(db, int(raw.MISUSE), ""), false
 	}
+	if text_has_nul(schema) {
+		return Wal_Checkpoint_Result{}, error_embedded_nul(db, "db_wal_checkpoint", "schema name"), false
+	}
 
 	// A nil schema means "every attached database" to SQLite.
 	c_schema := cstring(nil)
