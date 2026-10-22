@@ -1012,6 +1012,56 @@ def patch_generated_file() -> PatchResult:
         )
         applied += count
 
+    # C `va_list` parameters decay to `__va_list_tag *` on SysV x86-64, so
+    # passing Odin's 24-byte c.va_list by value there is an ABI mismatch.
+    # Elsewhere (Windows x64, arm64) the C ABI matches passing it by value.
+    va_list_alias = (
+        "// Argument type for SQLite's va_list parameters (vmprintf, vsnprintf,\n"
+        "// str_vappendf). On SysV x86-64 (Linux, macOS, BSD) C passes a va_list\n"
+        "// argument as a pointer to the caller's list, so pass `&ap` there; on\n"
+        "// Windows and arm64 targets pass the c.va_list value `ap`. Odin's own\n"
+        "// c.va_list does not match C's size on darwin_amd64 (8 vs 24 bytes), so\n"
+        "// these procedures are not usable from Odin on that target.\n"
+        "when ODIN_ARCH == .amd64 && ODIN_OS != .Windows {\n"
+        "\tVa_List_Arg :: ^c.va_list\n"
+        "} else {\n"
+        "\tVa_List_Arg :: c.va_list\n"
+        "}\n"
+    )
+    foreign_import_line = "foreign import sqlite { SQLITE_LIB }\n"
+    if va_list_alias not in text:
+        text, count = replace_one_required(
+            text,
+            foreign_import_line,
+            foreign_import_line + "\n" + va_list_alias,
+            "va_list argument alias",
+        )
+        applied += count
+
+    va_list_decls = (
+        (
+            "\tvmprintf  :: proc(cstring, c.va_list) -> cstring ---",
+            "\tvmprintf  :: proc(cstring, Va_List_Arg) -> cstring ---",
+        ),
+        (
+            "\tvsnprintf :: proc(i32, cstring, cstring, c.va_list) -> cstring ---",
+            "\tvsnprintf :: proc(i32, cstring, cstring, Va_List_Arg) -> cstring ---",
+        ),
+        (
+            "\tstr_vappendf   :: proc(_: ^Str, zFormat: cstring, _: c.va_list) ---",
+            "\tstr_vappendf   :: proc(_: ^Str, zFormat: cstring, _: Va_List_Arg) ---",
+        ),
+    )
+    for old_decl, new_decl in va_list_decls:
+        if old_decl in text:
+            text, count = replace_one_required(
+                text,
+                old_decl,
+                new_decl,
+                f"va_list parameter patch: {new_decl.split('::')[0].strip()}",
+            )
+            applied += count
+
     # Header guards are implementation details, not public SQLite constants.
     header_guard = "__SQLITESESSION_H_ :: 1\n"
     if header_guard in text:
@@ -1102,6 +1152,14 @@ def patch_generated_file() -> PatchResult:
     ):
         if gated_snippet not in text:
             fail(f"post-patch verification failed: {description} gate is incomplete")
+
+    if text.count(va_list_alias) != 1:
+        fail("post-patch verification failed: va_list argument alias is missing")
+    if re.search(r"(?m)^\s*\w+\s*::\s*proc\([^\n]*\bc\.va_list\b", text):
+        fail("post-patch verification failed: a declaration still takes c.va_list by value")
+    for _, new_decl in va_list_decls:
+        if new_decl not in text:
+            fail(f"post-patch verification failed: va_list patch missing: {new_decl.strip()}")
 
     if "sqlite3_activate_cerod" in text or "activate_cerod ::" in text:
         fail("post-patch verification failed: unsupported sqlite3_activate_cerod is exposed")
