@@ -235,7 +235,7 @@ CONCRETE_STRUCTS: dict[str, str] = {
 \txInstCount:         proc "c" (^Fts5context, ^i32) -> i32,
 \txInst:              proc "c" (^Fts5context, i32, ^i32, ^i32, ^i32) -> i32,
 \txRowid:             proc "c" (^Fts5context) -> Int64,
-\txColumnText:        proc "c" (^Fts5context, i32, ^cstring, ^i32) -> i32,
+\txColumnText:        proc "c" (^Fts5context, i32, ^[^]u8, ^i32) -> i32,
 \txColumnSize:        proc "c" (^Fts5context, i32, ^i32) -> i32,
 \txQueryPhrase:       proc "c" (^Fts5context, i32, rawptr, Fts5_Query_Callback) -> i32,
 \txSetAuxdata:        proc "c" (^Fts5context, rawptr, proc "c" (rawptr)) -> i32,
@@ -244,8 +244,8 @@ CONCRETE_STRUCTS: dict[str, str] = {
 \txPhraseNext:        proc "c" (^Fts5context, ^Fts5phrase_Iter, ^i32, ^i32),
 \txPhraseFirstColumn: proc "c" (^Fts5context, i32, ^Fts5phrase_Iter, ^i32) -> i32,
 \txPhraseNextColumn:  proc "c" (^Fts5context, ^Fts5phrase_Iter, ^i32),
-\txQueryToken:        proc "c" (^Fts5context, i32, i32, ^cstring, ^i32) -> i32,
-\txInstToken:         proc "c" (^Fts5context, i32, i32, ^cstring, ^i32) -> i32,
+\txQueryToken:        proc "c" (^Fts5context, i32, i32, ^[^]u8, ^i32) -> i32,
+\txInstToken:         proc "c" (^Fts5context, i32, i32, ^[^]u8, ^i32) -> i32,
 \txColumnLocale:      proc "c" (^Fts5context, i32, ^cstring, ^i32) -> i32,
 \txTokenize_v2:       proc "c" (^Fts5context, cstring, i32, cstring, i32, rawptr, Fts5_Token_Callback) -> i32,
 }""",
@@ -273,8 +273,13 @@ CONCRETE_STRUCTS: dict[str, str] = {
 
 # These helper callback aliases are needed to express pointer-to-callback
 # and nested callback fields without weakening the generated types to rawptr.
+#
+# FTS5 token buffers (Fts5_Token_Callback's pToken, and the xColumnText,
+# xQueryToken, and xInstToken outputs above) are length-delimited and are not
+# NUL-terminated, so they are byte pointers rather than cstring: read exactly
+# the accompanying byte count, e.g. string(pToken[:nToken]).
 STRUCT_HELPER_TYPES = """Module_Function :: proc "c" (^Context, i32, ^^Value)
-Fts5_Token_Callback :: proc "c" (rawptr, i32, cstring, i32, i32, i32) -> i32
+Fts5_Token_Callback :: proc "c" (rawptr, i32, [^]u8, i32, i32, i32) -> i32
 Fts5_Query_Callback :: proc "c" (^Fts5extension_Api, ^Fts5context, rawptr) -> i32
 """
 
@@ -1062,6 +1067,19 @@ def patch_generated_file() -> PatchResult:
             )
             applied += count
 
+    # sqlite3_keyword_name() stores a pointer to a keyword that is not
+    # zero-terminated; expose bytes so callers must use the returned length.
+    keyword_name_old = "\tkeyword_name  :: proc(i32, ^cstring, ^i32) -> i32 ---"
+    keyword_name_new = "\tkeyword_name  :: proc(i32, ^[^]u8, ^i32) -> i32 ---"
+    if keyword_name_old in text:
+        text, count = replace_one_required(
+            text,
+            keyword_name_old,
+            keyword_name_new,
+            "sqlite3_keyword_name byte-pointer output patch",
+        )
+        applied += count
+
     # Header guards are implementation details, not public SQLite constants.
     header_guard = "__SQLITESESSION_H_ :: 1\n"
     if header_guard in text:
@@ -1160,6 +1178,19 @@ def patch_generated_file() -> PatchResult:
     for _, new_decl in va_list_decls:
         if new_decl not in text:
             fail(f"post-patch verification failed: va_list patch missing: {new_decl.strip()}")
+
+    for byte_output, description in (
+        (keyword_name_new, "sqlite3_keyword_name output"),
+        ("Fts5_Token_Callback :: proc \"c\" (rawptr, i32, [^]u8, i32, i32, i32) -> i32", "FTS5 token callback"),
+        ("xColumnText:        proc \"c\" (^Fts5context, i32, ^[^]u8, ^i32) -> i32,", "FTS5 xColumnText"),
+        ("xQueryToken:        proc \"c\" (^Fts5context, i32, i32, ^[^]u8, ^i32) -> i32,", "FTS5 xQueryToken"),
+        ("xInstToken:         proc \"c\" (^Fts5context, i32, i32, ^[^]u8, ^i32) -> i32,", "FTS5 xInstToken"),
+    ):
+        if byte_output not in text:
+            fail(
+                "post-patch verification failed: non-NUL-terminated "
+                f"{description} is not exposed as bytes"
+            )
 
     if "sqlite3_activate_cerod" in text or "activate_cerod ::" in text:
         fail("post-patch verification failed: unsupported sqlite3_activate_cerod is exposed")
