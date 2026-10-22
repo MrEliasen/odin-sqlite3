@@ -64,11 +64,16 @@ import sqlite "vendor:sqlite"
 ```
 
 By default the package links `sqlite3` on Unix-like systems and `sqlite3.lib`
-on Windows. Select another static or shared-library import with:
+on Windows. Select another static or shared-library import by exposing its
+directory as a collection and naming the file:
 
 ```sh
-odin build . -define:SQLITE_LIB=system:/absolute/path/to/libsqlite3.a
+odin build . -collection:sqlitelib=/absolute/path/to/dir \
+  -define:SQLITE_LIB=sqlitelib:libsqlite3.a
 ```
+
+Odin dev-2026-08 and later reject absolute foreign-import paths, including
+`system:/absolute/path/to/libsqlite3.a`.
 
 Only the pinned 3.53.1 qualification build is fully tested. Other system SQLite
 versions and compile options may work, but must provide every symbol your build

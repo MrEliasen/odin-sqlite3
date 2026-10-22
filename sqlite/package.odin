@@ -10,7 +10,11 @@ package sqlite
 // elsewhere. Override the complete foreign import value for vendored or static
 // builds, for example:
 //
-//   odin build . -define:SQLITE_LIB=system:/absolute/path/to/libsqlite3.a
+//   odin build . -collection:sqlitelib=/absolute/path/to/dir \
+//       -define:SQLITE_LIB=sqlitelib:libsqlite3.a
+//
+// Odin dev-2026-08 and later reject absolute foreign-import paths, including
+// after `system:`, so point a collection at the library's directory instead.
 //
 // Connections request SQLite's FULLMUTEX (serialized) mode by default. If an
 // application explicitly opens with OPEN_NOMUTEX, it must externally serialize

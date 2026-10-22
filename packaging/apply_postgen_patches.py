@@ -34,6 +34,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RAW_GENERATED = PROJECT_ROOT / "sqlite" / "raw" / "generated" / "sqlite3.odin"
 RAW_IMPORTS = PROJECT_ROOT / "sqlite" / "raw" / "imports.odin"
 PINNED_SQLITE_HEADER = PROJECT_ROOT / "input" / "sqlite3.h"
+# Collection that exposes the directory of the SQLite library under test. It
+# must differ from Odin's own collections and the `project` collection below.
+SQLITE_LIBRARY_COLLECTION = "sqlitelib"
 
 
 # odin-c-bindgen currently records the first (forward) declaration of these
@@ -1667,6 +1670,19 @@ def verify_abi() -> None:
     )
 
 
+def sqlite_library_import_arguments(library: Path) -> list[str]:
+    # Odin dev-2026-08 and later reject absolute foreign-import paths, including
+    # `system:/absolute/path`. Expose the library's directory as a collection
+    # and import the file name from it instead; Odin resolves that to the same
+    # absolute linker input on every host. This also keeps a Windows
+    # drive-letter colon out of the import string.
+    resolved = library.resolve()
+    return [
+        f"-collection:{SQLITE_LIBRARY_COLLECTION}={resolved.parent.as_posix()}",
+        f"-define:SQLITE_LIB={SQLITE_LIBRARY_COLLECTION}:{resolved.name}",
+    ]
+
+
 def verify_host_symbols(library: Path) -> None:
     ensure_file(library)
     nm = shutil.which("nm")
@@ -1714,7 +1730,7 @@ def verify_host_symbols(library: Path) -> None:
             str(temp_dir),
             f"-collection:project={PROJECT_ROOT}",
             *(f"-define:SQLITE_{gate}=true" for gate in HOST_ENABLED_FEATURE_GATES),
-            f"-define:SQLITE_LIB=system:{library.resolve()}",
+            *sqlite_library_import_arguments(library),
             f"-out:{temp_dir / 'link_probe'}",
         ]
         run_checked(
@@ -1750,26 +1766,13 @@ def verify_optional_link(library: Path, feature_profile: str) -> None:
             odin_optional_link_probe_source(enabled_feature_gates, ungated_symbols),
             encoding="utf-8",
         )
-        if os.name == "nt":
-            try:
-                library_import = Path(
-                    os.path.relpath(library.resolve(), start=RAW_GENERATED.parent)
-                ).as_posix()
-            except ValueError:
-                fail(
-                    "on Windows, the SQLite library must be on the same drive "
-                    f"as the generated binding: {library.resolve()}"
-                )
-        else:
-            library_import = f"system:{library.resolve().as_posix()}"
-
         command = [
             odin,
             "run",
             str(temp_dir),
             f"-collection:project={PROJECT_ROOT}",
             *(f"-define:SQLITE_{gate}=true" for gate in enabled_feature_gates),
-            f"-define:SQLITE_LIB={library_import}",
+            *sqlite_library_import_arguments(library),
             "-o:none",
         ]
         output = run_checked(command, cwd=PROJECT_ROOT)

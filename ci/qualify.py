@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 import platform
 import shlex
 import shutil
@@ -47,6 +47,11 @@ ALL_FEATURE_DEFINES = (
     "SQLITE_HAS_STMT_SCANSTATUS_API",
     "SQLITE_HAS_SNAPSHOT_API",
 )
+
+# Collection that exposes the directory of an explicitly selected SQLite
+# library. It must not be one of Odin's own collections (base, core, vendor,
+# shared, system) or the `project` collection used by the postgen probes.
+SQLITE_LIBRARY_COLLECTION = "sqlitelib"
 
 Runner = Callable[..., subprocess.CompletedProcess[bytes] | subprocess.CompletedProcess[str]]
 
@@ -122,26 +127,17 @@ def feature_arguments(profile: str) -> list[str]:
     raise QualificationError(f"unknown SQLite feature profile: {profile}")
 
 
-def sqlite_library_import_value(
-    library: Path,
-    *,
-    windows: bool | None = None,
-) -> str:
-    if windows is None:
-        windows = os.name == "nt"
-    if windows:
-        try:
-            relative = os.path.relpath(library, start=RAW_PACKAGE)
-        except ValueError as error:
-            raise QualificationError(
-                "on Windows, the SQLite library must be on the same drive as "
-                f"the generated binding: {library}"
-            ) from error
-        # Odin resolves non-system foreign imports relative to the package that
-        # declares them. A relative path also avoids treating the drive-letter
-        # colon in an absolute Windows path as import syntax.
-        return Path(relative).as_posix()
-    return f"system:{library.as_posix()}"
+def sqlite_library_import_arguments(library: PurePath) -> list[str]:
+    # Odin dev-2026-08 and later reject absolute foreign-import paths, including
+    # `system:/absolute/path`. Expose the library's directory as a collection
+    # and import the file name from it instead; Odin resolves that to the same
+    # absolute linker input on every host. This also keeps a Windows
+    # drive-letter colon out of the import string. Forward slashes are accepted
+    # by Odin on every host.
+    return [
+        f"-collection:{SQLITE_LIBRARY_COLLECTION}={library.parent.as_posix()}",
+        f"-define:SQLITE_LIB={SQLITE_LIBRARY_COLLECTION}:{library.name}",
+    ]
 
 
 def sqlite_library_argument(library: Path | None) -> list[str]:
@@ -150,7 +146,7 @@ def sqlite_library_argument(library: Path | None) -> list[str]:
     resolved = library.resolve()
     if not resolved.is_file():
         raise QualificationError(f"SQLite library does not exist: {resolved}")
-    return [f"-define:SQLITE_LIB={sqlite_library_import_value(resolved)}"]
+    return sqlite_library_import_arguments(resolved)
 
 
 def executable_output_path(
@@ -353,12 +349,20 @@ def run_self_test() -> None:
         raise QualificationError(
             f"Windows qualification output must end in .exe: {windows_output}"
         )
-    simulated_library = PROJECT_ROOT / "out" / "ci-sqlite" / "sqlite3.lib"
-    windows_import = sqlite_library_import_value(simulated_library, windows=True)
-    if windows_import.startswith("system:") or Path(windows_import).is_absolute():
-        raise QualificationError(
-            f"Windows SQLite import must be package-relative: {windows_import}"
+    for simulated_library in (
+        PurePosixPath("/qualification/out/ci-sqlite/libsqlite3.a"),
+        PureWindowsPath("C:/qualification/out/ci-sqlite/sqlite3.lib"),
+    ):
+        collection_arg, define_arg = sqlite_library_import_arguments(simulated_library)
+        collection, _, file_name = define_arg.partition("=")[2].partition(":")
+        expected_collection_arg = (
+            f"-collection:{collection}={simulated_library.parent.as_posix()}"
         )
+        if file_name != simulated_library.name or collection_arg != expected_collection_arg:
+            raise QualificationError(
+                "SQLite import must name the library file inside a collection for "
+                f"its directory, not an absolute path: {collection_arg} {define_arg}"
+            )
     print(
         "Fail-fast self-test passed: a simulated first-step failure prevented "
         f"later execution; cross-check matrix contains {actual_cross_commands} commands.",

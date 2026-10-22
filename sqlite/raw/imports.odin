@@ -11,13 +11,17 @@ package raw
 // By default, ask the platform linker for the installed SQLite library. This
 // avoids embedding package-manager- or architecture-specific paths in the
 // binding. Consumers that vendor SQLite or require a particular static/shared
-// build can override the complete foreign-import value, for example:
+// build can override the complete foreign-import value by exposing the
+// library's directory as a collection and naming the file, for example:
 //
-//   odin build . -define:SQLITE_LIB=system:/absolute/path/to/libsqlite3.a
+//   odin build . -collection:sqlitelib=/absolute/path/to/dir \
+//       -define:SQLITE_LIB=sqlitelib:libsqlite3.a
 //
-// The `system:` prefix also prevents Odin from resolving a path relative to
-// this block's location in sqlite/raw/generated/sqlite3.odin. Use a non-system
-// value only for a library intentionally stored relative to that file.
+// Odin dev-2026-08 and later reject absolute foreign-import paths, including
+// `system:/absolute/path/to/libsqlite3.a`. The `system:` prefix also prevents
+// Odin from resolving a path relative to this block's location in
+// sqlite/raw/generated/sqlite3.odin. Use a value with neither prefix only for a
+// library intentionally stored relative to that file.
 @(private)
 DEFAULT_SQLITE_LIB :: (
 	"system:sqlite3.lib" when ODIN_OS == .Windows else

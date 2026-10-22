@@ -33,16 +33,21 @@ architecture-specific path.
 ## Build-time overrides
 
 If you vendor SQLite, need a particular static/shared build, or use a custom
-installation prefix, override the complete foreign-import value at build time:
+installation prefix, override the complete foreign-import value at build time.
+Expose the library's directory as an Odin collection and name the file:
 
 ```sh
-odin build . -define:SQLITE_LIB=system:/absolute/path/to/libsqlite3.a
+odin build . -collection:sqlitelib=/absolute/path/to/dir \
+  -define:SQLITE_LIB=sqlitelib:libsqlite3.a
 ```
+
+Odin dev-2026-08 and later reject absolute foreign-import paths, including
+`system:/absolute/path/to/libsqlite3.a`.
 
 You can also supply another `system:<name>` value when the installed library
 uses a different linker name. The `system:` prefix prevents Odin from resolving
-the remainder as a path relative to the binding, so retain it for absolute
-paths too. Use a non-system value only for a library intentionally stored
+the remainder as a path relative to the binding. Use a value with neither a
+collection nor a `system:` prefix only for a library intentionally stored
 relative to `sqlite/raw/generated/sqlite3.odin`.
 
 On Windows, provide a static or DLL import `.lib`; the runtime `.dll` itself is
