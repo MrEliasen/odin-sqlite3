@@ -4,10 +4,11 @@ import "core:mem"
 import sqlite "../sqlite"
 
 // Regression tests for defects found in the wrapper review: DB copies sharing
-// trace storage.
+// trace storage and 32-bit boolean reads.
 
 run_review_regression_tests :: proc() {
 	run_test("trace_config_survives_db_copies", test_trace_config_survives_db_copies)
+	run_test("column_get_bool_uses_sqlite_truthiness", test_column_get_bool_uses_sqlite_truthiness)
 }
 
 Review_App :: struct {
@@ -49,4 +50,30 @@ test_trace_config_survives_db_copies :: proc() {
 	expect_no_error(close_err, close_ok, "close through the stored copy")
 	expect_eq(len(tracker.bad_free_array), 0, "closing one DB copy must not free trace storage again")
 	expect_eq(len(tracker.allocation_map), 0, "DB copies must not leak trace storage")
+}
+
+// stmt_get_bool used the 32-bit sqlite3_column_int, so 4294967296 and 0.5 read
+// as false. It must agree with SQLite's own truth test (CASE WHEN x).
+test_column_get_bool_uses_sqlite_truthiness :: proc() {
+	test_db := test_db_open("column_get_bool_uses_sqlite_truthiness")
+	defer test_db_close(&test_db)
+
+	sql := "SELECT 4294967296, -4294967296, 0.5, '0.5', 1, 0, 0.0, NULL, 'abc'"
+	stmt := prepare_ok(test_db.db, sql)
+	defer finalize_ok(&stmt, sql)
+	step_expect_row(stmt, sql)
+
+	// The same values under SQLite's `CASE WHEN x THEN 1 ELSE 0 END`.
+	expected := [?]bool{true, true, true, true, true, false, false, false, false}
+	for want, i in expected {
+		expect_eq(sqlite.stmt_get_bool(stmt, i), want, "stmt_get_bool column %d must follow SQLite's truth test", i)
+	}
+
+	Flag_Row :: struct {
+		flag: bool,
+	}
+	row := Flag_Row{}
+	err, ok := sqlite.db_query_one_struct(test_db.db, "SELECT 4294967296 AS flag", &row)
+	expect_no_error(err, ok, "map a 64-bit integer into a bool field")
+	expect_true(row.flag, "struct bool fields use the same truth test")
 }

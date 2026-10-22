@@ -87,8 +87,18 @@ stmt_get_f64 :: proc(stmt: Stmt, index: int) -> f64 {
 	return raw.column_double(stmt.handle, i32(index))
 }
 
+// stmt_get_bool applies SQLite's own truth test (sqlite3VdbeBooleanValue, used
+// by WHERE and CASE WHEN): an INTEGER is true when non-zero, NULL is false, and
+// any other value is true when its REAL conversion is non-zero. Reading through
+// the 32-bit sqlite3_column_int would make 4294967296 and 0.5 false.
 stmt_get_bool :: proc(stmt: Stmt, index: int) -> bool {
-	return stmt_get_i32(stmt, index) != 0
+	switch stmt_column_type(stmt, index) {
+	case int(raw.INTEGER):
+		return stmt_get_i64(stmt, index) != 0
+	case int(raw.NULL):
+		return false
+	}
+	return stmt_get_f64(stmt, index) != 0
 }
 
 // stmt_get_text returns a copied string value for the current row/column using `allocator`.
