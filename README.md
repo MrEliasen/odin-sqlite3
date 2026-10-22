@@ -52,8 +52,8 @@ Raw declarations may still exist for these APIs. Items marked `partial` or
 - ASan: all native runners.
 - LeakSanitizer: Linux and macOS; unavailable on Windows.
 
-Cross-target checks prove compilation only. The separately built SQLite C
-library is not sanitizer-instrumented.
+Cross-target checks prove compilation only. The Linux and macOS ASan runs also
+instrument the pinned SQLite C library; on Windows it is not instrumented.
 
 ## Install
 

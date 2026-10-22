@@ -128,15 +128,52 @@ def materialize_sources(archive: Path, source_dir: Path) -> tuple[Path, Path]:
     return sqlite_c, sqlite_h
 
 
-def build_posix(sqlite_c: Path, output_dir: Path) -> Path:
-    compiler = os.environ.get("CC", "cc")
+def sanitizer_compiler() -> str:
+    # Odin links Linux and macOS `-sanitize:address` binaries through the
+    # `clang` on PATH, whose driver supplies the ASan runtime, so SQLite is
+    # instrumented by that same clang. Instrumentation is tied to a runtime:
+    # Apple clang's objects, for example, do not link against Homebrew LLVM's.
+    # CC is therefore not honored here. On macOS this resolves the same LLVM
+    # that ci/qualify.py puts first on PATH for the sanitizer run.
+    if sys.platform != "darwin":
+        return "clang"
+    llvm_bin = os.environ.get("ODIN_SANITIZER_LLVM_BIN")
+    if llvm_bin is None:
+        try:
+            prefix = subprocess.check_output(["brew", "--prefix", "llvm"], text=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            fail(
+                "Homebrew LLVM is required to build the macOS ASan SQLite; "
+                "install it or set ODIN_SANITIZER_LLVM_BIN"
+            )
+        llvm_bin = str(Path(prefix.strip()) / "bin")
+    clang = Path(llvm_bin) / "clang"
+    if not clang.is_file():
+        fail(f"sanitizer clang was not found: {clang}")
+    return str(clang)
+
+
+def build_posix(sqlite_c: Path, output_dir: Path, sanitizer: str | None) -> Path:
+    if sanitizer is None:
+        compiler = os.environ.get("CC", "cc")
+        code_generation = ["-O2"]
+    else:
+        compiler = sanitizer_compiler()
+        # -O1 with frame pointers is ASan's recommended speed/report balance;
+        # -g lets reports name SQLite source lines.
+        code_generation = [
+            "-O1",
+            "-g",
+            f"-fsanitize={sanitizer}",
+            "-fno-omit-frame-pointer",
+        ]
     archiver = os.environ.get("AR", "ar")
     object_path = output_dir / "sqlite3.o"
     library_path = output_dir / "libsqlite3.a"
     compile_command = [
         compiler,
         "-std=c11",
-        "-O2",
+        *code_generation,
         "-fPIC",
         *(f"-D{define}" for define in SQLITE_FEATURE_DEFINES),
         "-c",
@@ -174,8 +211,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("out/ci-sqlite"),
-        help="directory for verified sources and the static library",
+        help=(
+            "directory for verified sources and the static library "
+            "(default: out/ci-sqlite, or out/ci-sqlite-asan with --sanitize)"
+        ),
     )
     parser.add_argument(
         "--archive",
@@ -192,12 +231,29 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="verify/materialize sources without compiling the library",
     )
+    parser.add_argument(
+        "--sanitize",
+        choices=("address",),
+        help=(
+            "instrument SQLite with the clang that links Odin's "
+            "-sanitize:address binaries (Linux and macOS only)"
+        ),
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    output_dir = args.output.resolve()
+    if args.sanitize is not None and os.name == "nt":
+        # Odin links its own bundled ASan runtime on Windows instead of a
+        # compiler driver's; see CONTRIBUTING.md.
+        fail("--sanitize is not supported on Windows")
+    output = args.output
+    if output is None:
+        # Keep an instrumented library away from the normal build's path: it
+        # cannot link into a binary built without -sanitize:address.
+        output = Path("out/ci-sqlite-asan" if args.sanitize else "out/ci-sqlite")
+    output_dir = output.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="odin-sqlite-source-") as temp_name:
@@ -217,11 +273,13 @@ def main() -> int:
     library = (
         build_windows(sqlite_c, output_dir)
         if os.name == "nt"
-        else build_posix(sqlite_c, output_dir)
+        else build_posix(sqlite_c, output_dir, args.sanitize)
     )
     if not library.is_file() or library.stat().st_size == 0:
         fail(f"SQLite static library was not created: {library}")
     print(f"SQLite qualification library: {library.resolve()}", flush=True)
+    if args.sanitize is not None:
+        print(f"SQLite is instrumented with -fsanitize={args.sanitize}", flush=True)
     print(
         "Enabled SQLite feature profile: normalize, preupdate, session, "
         "column metadata, unlock-notify, statement scan-status, snapshot, "

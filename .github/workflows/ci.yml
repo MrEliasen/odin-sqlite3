@@ -209,12 +209,12 @@ jobs:
           name: sqlite-raw-generated
           path: sqlite/raw/generated
 
-      - name: Build pinned SQLite for sanitizer run (Unix)
+      - name: Build ASan-instrumented pinned SQLite (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: >-
-          python3 ci/build_sqlite.py --output out/ci-sqlite
-          --header-output input/sqlite3.h
+          python3 ci/build_sqlite.py --sanitize address
+          --output out/ci-sqlite-asan --header-output input/sqlite3.h
 
       - name: Build pinned SQLite for sanitizer run (Windows)
         if: runner.os == 'Windows'
@@ -228,7 +228,7 @@ jobs:
         shell: bash
         run: >-
           python3 ci/qualify.py sanitize
-          --sqlite-library "$PWD/out/ci-sqlite/libsqlite3.a"
+          --sqlite-library "$PWD/out/ci-sqlite-asan/libsqlite3.a"
           --feature-profile all
 
       - name: Run complete suite and examples under ASan (Windows)

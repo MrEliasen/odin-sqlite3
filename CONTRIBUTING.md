@@ -127,8 +127,20 @@ sanitizer instrumentation. On macOS the command selects Homebrew LLVM when it
 is installed; set `ODIN_SANITIZER_LLVM_BIN` to another compatible LLVM `bin`
 directory if needed. Linux needs a Clang toolchain. Windows x64 uses Odin's
 bundled ASan runtime; leak detection is disabled there because LeakSanitizer is
-not available, while address errors remain fatal. The separately compiled
-SQLite C library is trusted input and is not itself sanitizer-instrumented.
+not available, while address errors remain fatal. This target links the system
+or `QUALIFICATION_SQLITE_LIBRARY` SQLite as given; ASan checks only the Odin
+side of calls into an uninstrumented library.
+
+`make test-features-sanitize` and the CI sanitizer job instead link the pinned
+SQLite built by `python3 ci/build_sqlite.py --sanitize address` into
+`out/ci-sqlite-asan`. On Linux and macOS that build is instrumented by the same
+clang that links the Odin binaries (`clang` on `PATH`; on macOS the Homebrew
+LLVM or `ODIN_SANITIZER_LLVM_BIN` selection above), so SQLite's own memory
+accesses are checked too, including reads through a connection SQLite has
+already freed. Windows has no instrumented SQLite build: Odin links its bundled
+static LLVM 18 ASan runtime there, while MSVC's `/fsanitize=address` links
+MSVC's own runtime, so that job keeps the normal pinned library and ASan checks
+only the Odin side.
 
 Run the orchestration's negative fail-fast test with:
 
@@ -149,7 +161,8 @@ The workflow has three distinct gates:
    link-and-load/reference probe
    on Ubuntu 24.04 x64, macOS 14 arm64, and Windows Server 2022 x64.
 3. Complete native ASan execution on the same three runners, with the Windows
-   leak-detection limitation stated above.
+   leak-detection limitation stated above. SQLite itself is ASan-instrumented
+   on Linux and macOS, not on Windows.
 
 Do not describe cross-target `odin check` results as native execution or a
 sanitizer result.

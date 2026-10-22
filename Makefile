@@ -7,8 +7,14 @@ SQLITE_FEATURE_PROFILE ?= default
 
 ifeq ($(OS),Windows_NT)
 PINNED_SQLITE_LIBRARY = $(OUT_DIR)/ci-sqlite/sqlite3.lib
+# Odin links its bundled ASan runtime on Windows, which build_sqlite.py cannot
+# instrument SQLite for; the sanitizer run uses the normal pinned build there.
+SANITIZER_SQLITE_TARGET = build-ci-sqlite
+SANITIZER_SQLITE_LIBRARY = $(PINNED_SQLITE_LIBRARY)
 else
 PINNED_SQLITE_LIBRARY = $(OUT_DIR)/ci-sqlite/libsqlite3.a
+SANITIZER_SQLITE_TARGET = build-ci-sqlite-asan
+SANITIZER_SQLITE_LIBRARY = $(OUT_DIR)/ci-sqlite-asan/libsqlite3.a
 endif
 
 DEPS_DIR := deps
@@ -33,6 +39,7 @@ help:
 	@echo "  bindgen             Clone and build odin-c-bindgen into deps/bin"
 	@echo "  download-sqlite     Download sqlite3.h into input/"
 	@echo "  build-ci-sqlite     Build the pinned all-feature SQLite qualification library"
+	@echo "  build-ci-sqlite-asan  Build that library instrumented for AddressSanitizer (Linux/macOS)"
 	@echo "  generate            Generate raw bindings into sqlite/raw/generated"
 	@echo "  postgen-patch       Apply deterministic post-generation patches to raw bindings"
 	@echo "  verify-raw-abi      Compare generated Odin layouts with both C headers"
@@ -148,6 +155,14 @@ build-ci-sqlite:
 		--output "$(OUT_DIR)/ci-sqlite" \
 		--header-output "$(SQLITE_HEADER)"
 
+.PHONY: build-ci-sqlite-asan
+build-ci-sqlite-asan:
+	@set -eu; \
+	$(PYTHON) ci/build_sqlite.py \
+		--sanitize address \
+		--output "$(OUT_DIR)/ci-sqlite-asan" \
+		--header-output "$(SQLITE_HEADER)"
+
 .PHONY: generate
 generate: $(BINDGEN_BIN) $(SQLITE_HEADER)
 	@set -eu; \
@@ -255,10 +270,10 @@ test-features: build-ci-sqlite
 		--feature-profile all
 
 .PHONY: test-features-sanitize
-test-features-sanitize: build-ci-sqlite
+test-features-sanitize: $(SANITIZER_SQLITE_TARGET)
 	@set -eu; \
 	$(PYTHON) ci/qualify.py --odin "$(ODIN)" sanitize \
-		--sqlite-library "$(PINNED_SQLITE_LIBRARY)" \
+		--sqlite-library "$(SANITIZER_SQLITE_LIBRARY)" \
 		--feature-profile all
 
 .PHONY: cross-check
