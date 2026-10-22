@@ -5,13 +5,14 @@ import sqlite "../sqlite"
 import raw "../sqlite/raw/generated"
 
 // Regression tests for defects found in the wrapper review: DB copies sharing
-// trace storage, 32-bit boolean reads, UTF-16 struct fields, and per-row
-// temp-allocator growth.
+// trace storage, 32-bit boolean reads, UTF-16 struct fields, a column index
+// built before re-prepare, and per-row temp-allocator growth.
 
 run_review_regression_tests :: proc() {
 	run_test("trace_config_survives_db_copies", test_trace_config_survives_db_copies)
 	run_test("column_get_bool_uses_sqlite_truthiness", test_column_get_bool_uses_sqlite_truthiness)
 	run_test("row_mapping_rejects_utf16_string_fields", test_row_mapping_rejects_utf16_string_fields)
+	run_test("query_all_struct_maps_columns_after_reprepare", test_query_all_struct_maps_columns_after_reprepare)
 	run_test("scan_struct_does_not_grow_temp_allocator", test_scan_struct_does_not_grow_temp_allocator)
 }
 
@@ -113,6 +114,74 @@ test_row_mapping_rejects_utf16_string_fields :: proc() {
 	unmapped_err, unmapped_ok := sqlite.db_query_one_struct(test_db.db, "SELECT 7 AS id", &unmapped)
 	expect_no_error(unmapped_err, unmapped_ok, "an unmapped string16 field is ignored like any unmapped field")
 	expect_eq(unmapped.id, i64(7), "mapped fields still decode")
+}
+
+Review_Reprepare_Row :: struct {
+	a: i64,
+	b: string,
+	c: string,
+}
+
+@(private = "file")
+reprepare_other_handle: ^raw.Sqlite3
+@(private = "file")
+reprepare_fired: bool
+
+// Runs at OP_Init of the first sqlite3_step: after db_query_all_struct has
+// prepared its statement, before the read transaction starts. It stands in
+// for another connection migrating the schema in that window.
+@(private = "file")
+reprepare_drop_column_on_first_step :: proc "c" (mask: u32, ctx: rawptr, p: rawptr, x: rawptr) -> i32 {
+	if !reprepare_fired {
+		reprepare_fired = true
+		raw.exec(reprepare_other_handle, "ALTER TABLE reprepare_columns DROP COLUMN b", nil, nil, nil)
+	}
+	return 0
+}
+
+// The column index used to be built before the first step. A schema change
+// that renumbered `SELECT *` columns then mapped column c's value into b.
+test_query_all_struct_maps_columns_after_reprepare :: proc() {
+	test_db := test_db_open("query_all_struct_maps_columns_after_reprepare")
+	defer test_db_close(&test_db)
+	exec_ok(test_db.db, "CREATE TABLE reprepare_columns(a INTEGER, b TEXT, c TEXT)")
+	exec_ok(test_db.db, "INSERT INTO reprepare_columns VALUES (1, 'value-of-b', 'value-of-c')")
+
+	empty, empty_err, empty_ok := sqlite.db_query_all_struct(test_db.db, "SELECT * FROM reprepare_columns WHERE 0", Review_Reprepare_Row)
+	expect_no_error(empty_err, empty_ok, "zero-row query")
+	expect_eq(len(empty), 0, "zero-row query returns no rows")
+	delete(empty)
+
+	other, open_err, open_ok := sqlite.db_open(test_db.path)
+	expect_no_error(open_err, open_ok, "open second connection")
+	defer {
+		close_err, close_ok := sqlite.db_close(&other)
+		expect_no_error(close_err, close_ok, "close second connection")
+	}
+	reprepare_other_handle = other.handle
+	reprepare_fired = false
+	raw.trace_v2(test_db.db.handle, u32(raw.TRACE_STMT), reprepare_drop_column_on_first_step, nil)
+
+	rows, err, ok := sqlite.db_query_all_struct(test_db.db, "SELECT * FROM reprepare_columns", Review_Reprepare_Row)
+	raw.trace_v2(test_db.db.handle, 0, nil, nil)
+	expect_no_error(err, ok, "query across an automatic re-prepare")
+	defer {
+		for row in rows {
+			delete(row.b)
+			delete(row.c)
+		}
+		delete(rows)
+	}
+
+	expect_true(reprepare_fired, "test bug: schema change hook did not run")
+	column_count, count_err, count_ok := sqlite.db_scalar_i64(test_db.db, "SELECT count(*) FROM pragma_table_info('reprepare_columns')")
+	expect_no_error(count_err, count_ok, "count columns")
+	expect_eq(column_count, i64(2), "test bug: column b was not dropped")
+
+	expect_eq(len(rows), 1, "one row")
+	expect_eq(rows[0].a, i64(1), "a maps by name")
+	expect_eq(rows[0].b, "", "dropped column b has no value")
+	expect_eq(rows[0].c, "value-of-c", "c maps to its own column after re-prepare")
 }
 
 // stmt_scan_struct built its per-call column index on context.temp_allocator,

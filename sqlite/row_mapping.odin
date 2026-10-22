@@ -212,9 +212,13 @@ db_query_all_struct :: proc(
 	}
 
 	// Precompute the column-name → index map once per query rather than re-scanning column names
-	// for every field of every row.
-	column_index_by_name := row_mapping_build_column_index(stmt, context.temp_allocator)
+	// for every field of every row. It is built at the first row: until the first step SQLite may
+	// still automatically re-prepare the statement against a changed schema (e.g. `SELECT *` after
+	// DROP COLUMN), which renumbers its columns. A running statement is never re-prepared, so an
+	// index built once a row exists stays valid for the rest of the query.
+	column_index_by_name: map[string]int
 	defer row_mapping_destroy_column_index(column_index_by_name, context.temp_allocator)
+	index_built := false
 
 	rows := make([dynamic]T, 0, 0, allocator)
 	for {
@@ -227,6 +231,16 @@ db_query_all_struct :: proc(
 		}
 		if !has_row {
 			break
+		}
+
+		if !index_built {
+			index_err: runtime.Allocator_Error
+			column_index_by_name, index_err = row_mapping_build_column_index_checked(stmt, context.temp_allocator)
+			if index_err != nil {
+				delete(rows)
+				return nil, error_alloc(query_all_struct_op, index_err), false
+			}
+			index_built = true
 		}
 
 		row := T{}
