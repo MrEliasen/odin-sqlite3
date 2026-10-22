@@ -76,8 +76,15 @@ stmt_scan_struct :: proc(
 		return err, false
 	}
 
-	column_index_by_name := row_mapping_build_column_index(stmt, context.temp_allocator)
-	defer row_mapping_destroy_column_index(column_index_by_name, context.temp_allocator)
+	// The index lives only for this call, so it uses an allocator whose frees
+	// take effect. context.temp_allocator ignores frees, so a per-row index
+	// there grew the temp arena with every scanned row until the caller's
+	// free_all.
+	column_index_by_name, index_err := row_mapping_build_column_index_checked(stmt, context.allocator)
+	if index_err != nil {
+		return error_alloc(row_mapping_op, index_err), false
+	}
+	defer row_mapping_destroy_column_index(column_index_by_name, context.allocator)
 
 	// Decode into a zeroed temporary so neither partial scalar writes nor
 	// newly allocated fields can mutate/free caller memory on failure.
@@ -250,24 +257,48 @@ db_query_all_struct :: proc(
 // statement during the first step. Release the result with
 // `row_mapping_destroy_column_index` and the same allocator.
 row_mapping_build_column_index :: proc(stmt: Stmt, allocator := context.temp_allocator) -> map[string]int {
+	out, _ := row_mapping_build_column_index_checked(stmt, allocator)
+	return out
+}
+
+// row_mapping_build_column_index_checked reports an allocation failure (after
+// releasing the partial index) instead of silently dropping columns, which
+// would leave the matching fields unmapped while the scan reports success.
+@(private)
+row_mapping_build_column_index_checked :: proc(stmt: Stmt, allocator: runtime.Allocator) -> (map[string]int, runtime.Allocator_Error) {
 	out: map[string]int
 	column_count := stmt_column_count(stmt)
 	if column_count <= 0 {
-		return out
+		return out, nil
 	}
-	out = make(map[string]int, column_count, allocator)
+	alloc_err: runtime.Allocator_Error
+	out, alloc_err = make(map[string]int, column_count, allocator)
+	if alloc_err != nil {
+		return nil, alloc_err
+	}
 	for i := 0; i < column_count; i += 1 {
 		name := stmt_column_name(stmt, i)
 		if name == "" {
 			continue
 		}
 		// First occurrence wins to match the previous linear-scan behaviour.
-		if _, exists := out[name]; !exists {
-			owned_name := strings.clone(name, allocator)
-			out[owned_name] = i
+		if _, exists := out[name]; exists {
+			continue
 		}
+		owned_name, clone_err := strings.clone(name, allocator)
+		if clone_err == nil {
+			_, slot, _, slot_err := map_entry(&out, owned_name)
+			if slot_err == nil {
+				slot^ = i
+				continue
+			}
+			clone_err = slot_err
+			delete(owned_name, allocator)
+		}
+		row_mapping_destroy_column_index(out, allocator)
+		return nil, clone_err
 	}
-	return out
+	return out, nil
 }
 
 // row_mapping_destroy_column_index releases both the map storage and every

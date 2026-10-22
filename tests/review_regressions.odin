@@ -5,12 +5,14 @@ import sqlite "../sqlite"
 import raw "../sqlite/raw/generated"
 
 // Regression tests for defects found in the wrapper review: DB copies sharing
-// trace storage, 32-bit boolean reads, and UTF-16 struct fields.
+// trace storage, 32-bit boolean reads, UTF-16 struct fields, and per-row
+// temp-allocator growth.
 
 run_review_regression_tests :: proc() {
 	run_test("trace_config_survives_db_copies", test_trace_config_survives_db_copies)
 	run_test("column_get_bool_uses_sqlite_truthiness", test_column_get_bool_uses_sqlite_truthiness)
 	run_test("row_mapping_rejects_utf16_string_fields", test_row_mapping_rejects_utf16_string_fields)
+	run_test("scan_struct_does_not_grow_temp_allocator", test_scan_struct_does_not_grow_temp_allocator)
 }
 
 Review_App :: struct {
@@ -111,4 +113,54 @@ test_row_mapping_rejects_utf16_string_fields :: proc() {
 	unmapped_err, unmapped_ok := sqlite.db_query_one_struct(test_db.db, "SELECT 7 AS id", &unmapped)
 	expect_no_error(unmapped_err, unmapped_ok, "an unmapped string16 field is ignored like any unmapped field")
 	expect_eq(unmapped.id, i64(7), "mapped fields still decode")
+}
+
+// stmt_scan_struct built its per-call column index on context.temp_allocator,
+// whose frees are no-ops, so every scanned row grew the temp arena.
+test_scan_struct_does_not_grow_temp_allocator :: proc() {
+	test_db := test_db_open("scan_struct_does_not_grow_temp_allocator")
+	defer test_db_close(&test_db)
+	exec_ok(test_db.db, "CREATE TABLE scan_rows(id INTEGER PRIMARY KEY, a INTEGER, b INTEGER)")
+	exec_ok(test_db.db, "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 200) INSERT INTO scan_rows SELECT x, x * 2, x * 3 FROM n")
+
+	sql := "SELECT id, a, b FROM scan_rows ORDER BY id"
+	stmt := prepare_ok(test_db.db, sql)
+	defer finalize_ok(&stmt, sql)
+
+	Scan_Row :: struct {
+		id: i64,
+		a:  i64,
+		b:  i64,
+	}
+
+	temp_tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&temp_tracker, context.temp_allocator)
+	defer mem.tracking_allocator_destroy(&temp_tracker)
+	heap_tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&heap_tracker, context.allocator)
+	heap_tracker.bad_free_callback = mem.tracking_allocator_bad_free_callback_add_to_array
+	defer mem.tracking_allocator_destroy(&heap_tracker)
+
+	scanned := 0
+	{
+		context.temp_allocator = mem.tracking_allocator(&temp_tracker)
+		context.allocator = mem.tracking_allocator(&heap_tracker)
+		for {
+			has_row, step_err, step_ok := sqlite.stmt_next(stmt)
+			expect_no_error(step_err, step_ok, "step scan_rows")
+			if !has_row {
+				break
+			}
+			row := Scan_Row{}
+			scan_err, scan_ok := sqlite.stmt_scan_struct(stmt, &row)
+			expect_no_error(scan_err, scan_ok, "scan row")
+			expect_eq(row.b, row.id * 3, "scan maps columns")
+			scanned += 1
+		}
+	}
+
+	expect_eq(scanned, 200, "all rows scanned")
+	expect_eq(temp_tracker.total_allocation_count, 0, "per-row scans must not allocate from context.temp_allocator")
+	expect_eq(heap_tracker.current_memory_allocated, 0, "per-call scratch must be released before stmt_scan_struct returns")
+	expect_eq(len(heap_tracker.bad_free_array), 0, "per-call scratch must be freed with its own allocator")
 }
